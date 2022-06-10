@@ -178,6 +178,7 @@ class TensorRTEngineOp : public framework::OperatorBase {
   std::map<std::string, std::vector<int>> min_input_shape_{};
   std::map<std::string, std::vector<int>> max_input_shape_{};
   std::map<std::string, std::vector<int>> opt_input_shape_{};
+  int engine_op_index_;
 
  public:
   TensorRTEngineOp(const std::string &type,
@@ -203,6 +204,7 @@ class TensorRTEngineOp : public framework::OperatorBase {
     if (use_static_engine_) {
       model_opt_cache_dir_ = Attr<std::string>("model_opt_cache_dir");
     }
+    engine_op_index_ = Attr<int>("engine_op_index");
 
     if (HasAttr("dynamic_shape_names") && HasAttr("min_input_shape") &&
         HasAttr("max_input_shape") && HasAttr("opt_input_shape")) {
@@ -259,12 +261,22 @@ class TensorRTEngineOp : public framework::OperatorBase {
     }
     bool has_engine =
         inference::Singleton<inference::tensorrt::TRTEngineManager>::Global()
-            .Has(engine_key_ + std::to_string(predictor_id_));
+            // .Has(engine_key_ + std::to_string(predictor_id_));
+            .Has(std::to_string(predictor_id_));
 
     if (!calibration_mode_ && has_engine) {
       trt_engine_ =
           inference::Singleton<inference::tensorrt::TRTEngineManager>::Global()
-              .Get(engine_key_ + std::to_string(predictor_id_));
+              .Get(std::to_string(predictor_id_));
+      /*Update@wufeisheng()2022.6.9: 
+      When create first tensorrt op, we build inference tensorrt engine by invoking freezenetwork.
+      This may spend a lot of time
+      */
+      nvinfer1::ICudaEngine* infer_engine = trt_engine_->engine();
+      if (nullptr == infer_engine) {
+        trt_engine_->FreezeNetwork();
+        trt_engine_->ClearWeights();
+      }
     }
     precision_mode_ = AnalysisConfig::Precision::kFloat32;
     if (enable_int8_) {
@@ -470,12 +482,27 @@ class TensorRTEngineOp : public framework::OperatorBase {
     nvinfer1::IExecutionContext *trt_context = nullptr;
     if (engine->with_dynamic_shape()) {
       // Initilize context and get offset by profile index
-      trt_context = engine->context();
-      binding_offset = engine->GetBindingsOffset();
+      trt_context = engine->context(engine_op_index_);
+      binding_offset = engine->GetBindingsOffset(engine_op_index_);
     }
     std::map<std::string, std::vector<int>> max_input_shape =
             engine->max_input_shape();
-    // Bind input tensor to TRT.
+
+    //Set other engine op input as 0
+    for (int i = 0; i < engine->engine_op_num; i++) {
+      if (i == engine_op_index_) continue;
+      const std::map<std::string, std::vector<int>>& current_max_input_shape = 
+            engine->max_input_shapes()[i];
+      for (const auto &input : current_max_input_shape) {
+        const int bind_index =
+            engine->engine()->getBindingIndex(input.first.c_str()) + binding_offset;
+        trt_context->setBindingDimensions(
+                bind_index, inference::tensorrt::Vec2TRT_Dims({0,0}, input.first.c_str(), true));
+      }
+    }
+    
+
+   
     for (const auto &x : runtime_input_names_) {
       // convert input and copy to TRT engine's buffer
       auto &t =
@@ -553,7 +580,7 @@ class TensorRTEngineOp : public framework::OperatorBase {
         // for(auto i : t_shape) {
         //   VLOG(3) << i;
         // }
-        
+         // Bind current engine op input tensor to TRT.
         if(x=="stack_2.tmp_0" || x=="stack_3.tmp_0") {
           // std::vector<int64_t> tmp_shape(max_input_shape[x].begin(),
           //                                       max_input_shape[x].end());

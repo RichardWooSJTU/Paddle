@@ -197,25 +197,28 @@ class TensorRTEngine {
         precision_(precision),
         calibrator_(calibrator),
         device_id_(device_id),
-        min_input_shape_(min_input_shape),
-        max_input_shape_(max_input_shape),
-        optim_input_shape_(optim_input_shape),
+        all_min_input_shape_(min_input_shape),
+        all_max_input_shape_(max_input_shape),
+        all_optim_input_shape_(optim_input_shape),
         disable_trt_plugin_fp16_(disable_trt_plugin_fp16),
         logger_(logger) {
-    if (min_input_shape_.size() != 0 && max_input_shape_.size() != 0 &&
+    min_input_shapes_.push_back(min_input_shape);
+    max_input_shapes_.push_back(max_input_shape);
+    optim_input_shapes_.push_back(optim_input_shape);
+    if (all_min_input_shape_.size() != 0 && all_max_input_shape_.size() != 0 &&
         optim_input_shape_.size() != 0) {
       PADDLE_ENFORCE_EQ(
-          min_input_shape_.size(), max_input_shape_.size(),
+          all_min_input_shape_.size(), all_max_input_shape_.size(),
           platform::errors::InvalidArgument(
-              "The min_input_shape_'s size(%d) should be equal to the "
-              "size(%d) of max_input_shape_",
-              min_input_shape_.size(), max_input_shape_.size()));
+              "The all_min_input_shape_'s size(%d) should be equal to the "
+              "size(%d) of all_max_input_shape_",
+              all_min_input_shape_.size(), all_max_input_shape_.size()));
       PADDLE_ENFORCE_EQ(
-          min_input_shape_.size(), optim_input_shape_.size(),
+          all_min_input_shape_.size(), optim_input_shape_.size(),
           platform::errors::InvalidArgument(
-              "The min_input_shape_'s size(%d) should be equal to the "
+              "The all_min_input_shape_'s size(%d) should be equal to the "
               "size(%d) of optim_input_shape_",
-              min_input_shape_.size(), optim_input_shape_.size()));
+              all_min_input_shape_.size(), optim_input_shape_.size()));
 #if IS_TRT_VERSION_GE(6000)
       with_dynamic_shape_ = true;
 #else
@@ -253,11 +256,38 @@ class TensorRTEngine {
   nvinfer1::ITensor* GetITensor(const std::string& name);
 
   nvinfer1::ICudaEngine* engine() { return infer_engine_.get(); }
-  nvinfer1::IExecutionContext* context() {
+  // nvinfer1::IExecutionContext* context() {
+  //   VLOG(6) << "TensorRTEngine create context---";
+  //   std::unique_lock<std::mutex> lock(mutex_);
+  //   const std::thread::id tid = std::this_thread::get_id();
+  //   if (infer_context_.find(tid) == infer_context_.end()) {
+  //     PADDLE_ENFORCE_NOT_NULL(
+  //         infer_engine_,
+  //         platform::errors::InvalidArgument(
+  //             "You should build engine first and then set the context."));
+  //     // We may see trt warning: Profile 0 has been chosen by another
+  //     // IExecutionContext...
+  //     // It's ok. We will set it later.
+  //     infer_context_[tid].reset(infer_engine_->createExecutionContext());
+  //     if (with_dynamic_shape_) {
+  //       VLOG(6) << "cur_profile_num_: " << cur_profile_num_;
+  //       // need new profile if it's not the first
+  //       if (cur_profile_num_ > 0) {
+  //         infer_context_[tid]->setOptimizationProfile(cur_profile_num_);
+  //       }
+  //       profile_index_[tid] = cur_profile_num_;
+  //       ++cur_profile_num_;
+  //     }
+  //   }
+  //   return infer_context_[tid].get();
+  // }
+  nvinfer1::IExecutionContext* context(int engine_op_index) {
     VLOG(6) << "TensorRTEngine create context---";
     std::unique_lock<std::mutex> lock(mutex_);
     const std::thread::id tid = std::this_thread::get_id();
-    if (infer_context_.find(tid) == infer_context_.end()) {
+    std::unordered_map<std::thread::id, infer_ptr<nvinfer1::IExecutionContext>>&
+                       infer_context = infer_context_[engine_op_index];
+    if (infer_context.find(tid) == infer_context.end()) {
       PADDLE_ENFORCE_NOT_NULL(
           infer_engine_,
           platform::errors::InvalidArgument(
@@ -265,32 +295,32 @@ class TensorRTEngine {
       // We may see trt warning: Profile 0 has been chosen by another
       // IExecutionContext...
       // It's ok. We will set it later.
-      infer_context_[tid].reset(infer_engine_->createExecutionContext());
+      infer_context[tid].reset(infer_engine_->createExecutionContext());
       if (with_dynamic_shape_) {
         VLOG(6) << "cur_profile_num_: " << cur_profile_num_;
         // need new profile if it's not the first
         if (cur_profile_num_ > 0) {
-          infer_context_[tid]->setOptimizationProfile(cur_profile_num_);
+          infer_context[tid]->setOptimizationProfile(engine_op_index * max_profile_num_ + cur_profile_num_);
         }
         profile_index_[tid] = cur_profile_num_;
         ++cur_profile_num_;
       }
     }
-    return infer_context_[tid].get();
+    return infer_context[tid].get();
   }
 
-  int GetProfileIndex() {
+  int GetProfileIndex(int engine_op_index) {
     if (max_profile_num_ > 1) {
       std::unique_lock<std::mutex> lock(mutex_);
       const std::thread::id tid = std::this_thread::get_id();
-      return profile_index_[tid];
+      return engine_op_index * engine_op_num_ + profile_index_[tid];
     } else {
-      return 0;
+      return engine_op_index;
     }
   }
 
-  int GetBindingsOffset() {
-    return (binding_num_ / max_profile_num_) * GetProfileIndex();
+  int GetBindingsOffset(int engine_op_index) {
+    return (binding_num_ / (engine_op_num_ * max_profile_num_)) * GetProfileIndex(engine_op_index);
   }
 
   int GetNbBindings() { return binding_num_; }
@@ -438,9 +468,25 @@ class TensorRTEngine {
 
   nvinfer1::INetworkDefinition* network() { return infer_network_.get(); }
 
-  ShapeMapType min_input_shape() { return min_input_shape_; }
-  ShapeMapType max_input_shape() { return max_input_shape_; }
-  ShapeMapType optim_input_shape() { return optim_input_shape_; }
+  ShapeMapType min_input_shape() {
+    return all_min_input_shape_; 
+  }
+  ShapeMapType max_input_shape() {
+    return all_max_input_shape_; 
+  }
+  ShapeMapType optim_input_shape() {
+    return all_optim_input_shape_; 
+  }
+
+  std::vector<ShapeMapType> mim_input_shapes() {
+    return min_input_shapes_;
+  }
+  std::vector<ShapeMapType> max_input_shapes() {
+    return max_input_shapes_;
+  }
+  std::vector<ShapeMapType> optim_input_shapes() {
+    return optim_input_shapes_;
+  }
 
   bool AdjustDynamicShapeRange(const ShapeMapType& runtime_input_shape,
                                std::vector<std::string>* changed) {
@@ -450,44 +496,70 @@ class TensorRTEngine {
       auto name = it.first;
       auto input_shape = it.second;
       PADDLE_ENFORCE_EQ(
-          min_input_shape_.count(name), true,
+          all_min_input_shape_.count(name), true,
           platform::errors::InvalidArgument(
               "TRT dynamic_shape min_input_shape %s not found.", name));
-      PADDLE_ENFORCE_EQ(min_input_shape_[name].size(), input_shape.size(),
+      PADDLE_ENFORCE_EQ(all_min_input_shape_[name].size(), input_shape.size(),
                         platform::errors::InvalidArgument(
                             "TRT dynamic_shape min_input_shape %s size not "
                             "equal, the min_input_shape[%s].size()=%d"
                             ", but the runtime_input_shape[%s].size()=%d.",
-                            name, name, min_input_shape_[name].size(), name,
+                            name, name, all_min_input_shape_[name].size(), name,
                             input_shape.size()));
-      auto bak_min_shape = min_input_shape_[name];
-      auto bak_max_shape = max_input_shape_[name];
+      auto bak_min_shape = all_min_input_shape_[name];
+      auto bak_max_shape = all_max_input_shape_[name];
       bool min_change = false;
       bool max_change = false;
       for (size_t d = 0; d < input_shape.size(); ++d) {
-        if (input_shape[d] < min_input_shape_[name][d]) {
+        if (input_shape[d] < all_min_input_shape_[name][d]) {
           ret = true;
           min_change = true;
-          min_input_shape_[name][d] = input_shape[d];
+          all_min_input_shape_[name][d] = input_shape[d];
         }
-        if (input_shape[d] > max_input_shape_[name][d]) {
+        if (input_shape[d] > all_max_input_shape_[name][d]) {
           ret = true;
           max_change = true;
-          max_input_shape_[name][d] = input_shape[d];
+          all_max_input_shape_[name][d] = input_shape[d];
         }
       }
 
       if (min_change)
         LOG(INFO) << "refactor shape range: " << name << ", min_shape from "
                   << Vec2Str(bak_min_shape) << " to "
-                  << Vec2Str(min_input_shape_[name]);
+                  << Vec2Str(all_min_input_shape_[name]);
       if (max_change)
         LOG(INFO) << "refactor shape range: " << name << ", max_shape from "
                   << Vec2Str(bak_max_shape) << " to "
-                  << Vec2Str(max_input_shape_[name]);
+                  << Vec2Str(all_max_input_shape_[name]);
       if (min_change || max_change) changed->push_back(name);
     }
     return ret;
+  }
+
+   /*  Update@wufeisheng()2022.6.9: 
+   This is called when engine is got in trt engine pass which do not need to create new engine.
+   For create dynamic input when ConvertBlockToTRTEngine
+   */
+  int engine_op_num() {return engine_op_num_;}
+  void AddEngineOp(ShapeMapType& new_min_input_shape, 
+                        ShapeMapType& new_max_input_shape, 
+                        ShapeMapType& new_optim_input_shape) {
+    //Add dynamic shapes
+    min_input_shapes_.push_back(new_min_input_shape);
+    max_input_shapes_.push_back(new_max_input_shape);
+    optim_input_shapes_.push_back(new_optim_input_shape)
+    
+    all_min_input_shape_.insert(new_min_input_shape.begin(), new_min_input_shape.end());
+    all_max_input_shape_.insert(new_max_input_shape.begin(), new_max_input_shape.end());
+    all_optim_input_shape_.insert(new_optim_input_shape.begin(), new_optim_input_shape.end());
+
+    engine_op_num_++;
+
+    //Create optim profile. Dynamic shapes of each profile will be set when build engine in freeze network
+    optim_profiles_.resize(engine_op_num_);
+    optim_profiles_[engine_op_num_-1].resize(max_profile_num_);
+    for (int i = 0; i < max_profile_num_; i++)
+      optim_profiles_[engine_op_num_][i] = infer_builder_->createOptimizationProfile();
   }
 
   bool use_oss() { return use_oss_; }
@@ -594,6 +666,18 @@ class TensorRTEngine {
   // freshDeviceId().
   void freshDeviceId();
 
+  /*  Update@wufeisheng()2022.6.9: 
+  We need to set profile for each branch of networks(engine op)
+  Profile of current engine op will be set normally.
+  Profiles of other engine op will be set to 0.
+  This should be called after network has been built/ before building engine.
+  FreezeNetwork is an option.
+  */
+  void SetOptimizationProfileImpl(const std::pair<std::string, std::vector<int>>& input,
+                                  std::vector<nvinfer1::IOptimizationProfile*>& optim_profile,
+                                  bool for_other_engine_op);
+  void SetOptimizationProfile(int engine_op_index);
+
   // the max batch size
   int max_batch_;
   // the runtime batch size
@@ -605,14 +689,14 @@ class TensorRTEngine {
   TRTInt8Calibrator* calibrator_;
   // batch size of the current data, will be updated each Executation.
   int batch_size_{-1};
-
+  
   int device_id_;
   int max_profile_num_{1};
   int cur_profile_num_{0};
-  std::unordered_map<std::thread::id, int> profile_index_;
-  ShapeMapType min_input_shape_;
-  ShapeMapType max_input_shape_;
-  ShapeMapType optim_input_shape_;
+
+  // Update@wufeisheng()2022.6.10: a count number for engine ops
+  int engine_op_num_{1};  
+
   bool disable_trt_plugin_fp16_{false};
   bool use_oss_{false};
   bool use_dla_{false};
@@ -643,24 +727,36 @@ class TensorRTEngine {
   infer_ptr<nvinfer1::IBuilder> infer_builder_;
   infer_ptr<nvinfer1::INetworkDefinition> infer_network_;
   infer_ptr<nvinfer1::ICudaEngine> infer_engine_;
-  std::unordered_map<std::thread::id, infer_ptr<nvinfer1::IExecutionContext>>
+  std::vector<std::unordered_map<std::thread::id, infer_ptr<nvinfer1::IExecutionContext>>>
       infer_context_;
   infer_ptr<nvinfer1::IHostMemory> ihost_memory_;
   std::unordered_map<nvinfer1::ITensor*, float> quant_dynamic_range_;
+
+#if IS_TRT_VERSION_GE(6000)
+  int binding_num_;
+  infer_ptr<nvinfer1::IBuilderConfig> infer_builder_config_;
+  std::vector<std::vector<nvinfer1::IOptimizationProfile*>> optim_profiles_;
+  std::vector<std::unique_ptr<plugin::DynamicPluginTensorRT>> owned_pluginv2_;
+#endif
+  std::mutex mutex_;
+  bool use_inspector_;
 
   std::unordered_map<std::string, paddle::any> attrs_;
   std::unordered_map<std::string, std::function<void(void)>> attr_dels_;
 
   // For dynamic shape
   bool with_dynamic_shape_{false};
-#if IS_TRT_VERSION_GE(6000)
-  int binding_num_;
-  infer_ptr<nvinfer1::IBuilderConfig> infer_builder_config_;
-  std::vector<nvinfer1::IOptimizationProfile*> optim_profiles_;
-  std::vector<std::unique_ptr<plugin::DynamicPluginTensorRT>> owned_pluginv2_;
-#endif
-  std::mutex mutex_;
-  bool use_inspector_;
+
+  std::unordered_map<std::thread::id, int> profile_index_;
+  std::vector<ShapeMapType> min_input_shapes_;
+  std::vector<ShapeMapType> max_input_shapes_;
+  std::vector<ShapeMapType> optim_input_shapes_;
+
+  ShapeMapType all_min_input_shape_;
+  ShapeMapType all_max_input_shape_;
+  ShapeMapType all_optim_input_shape_;
+
+
 };  // class TensorRTEngine
 
 // Add a layer__ into engine__ with args ARGS.
@@ -702,6 +798,15 @@ class TRTEngineManager {
                            device_id, min_input_shape, max_input_shape,
                            optim_input_shape, disable_trt_plugin_fp16, logger);
     engines_[name].reset(p);
+
+    /*  Update@wufeisheng()2022.6.9:  
+    init netwok here instead of building it before converting op.
+    This is because we change to allow engine has one network with multiple branches, 
+    in each branch inputX->outputX is independent, but the share one netwok in one engine.
+    So we init network here for all network building steps.
+    */
+
+    p->InitNetwork();
     return p;
   }
 

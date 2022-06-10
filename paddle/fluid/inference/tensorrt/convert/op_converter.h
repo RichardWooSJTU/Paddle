@@ -247,7 +247,7 @@ class OpConverter {
       const std::vector<std::string>& inputs,
       const std::unordered_set<std::string>& parameters,
       const std::vector<std::string>& outputs, TensorRTEngine* engine) {
-    engine->InitNetwork();
+    // engine->InitNetwork();
     bool all_dynamic_shape_set = true;
     for (auto& input : inputs) {
       if (parameters.count(input)) continue;
@@ -321,8 +321,8 @@ class OpConverter {
     for (auto& output : outputs) {
       engine->DeclareOutput(output);
     }
-    engine->FreezeNetwork();
-    engine->ClearWeights();
+    // engine->FreezeNetwork();
+    // engine->ClearWeights();
   }
 
   void RreplenishLayerAndOutput(

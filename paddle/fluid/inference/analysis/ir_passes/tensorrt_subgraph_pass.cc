@@ -161,6 +161,8 @@ void TensorRtSubgraphPass::CreateTensorRTOp(
   std::vector<std::string> params_not_shared;
 
   // The node->inputs contains input tensors and parameters.
+  //TODO: Although deleting params shared by more than 1 ops, there will be problem, 
+  // but if these ops are all trt engine op...... we still should remove them
   for (auto *x : node->inputs) {
     input_names.insert(x->Name());
     input_names_with_id.insert(x->Name() + std::to_string(x->id()));
@@ -202,6 +204,14 @@ void TensorRtSubgraphPass::CreateTensorRTOp(
       Get<std::map<std::string, std::vector<int>>>("max_input_shape");
   auto opt_input_shape =
       Get<std::map<std::string, std::vector<int>>>("optim_input_shape");
+
+  //debug 
+  for (auto beg = min_input_shape.begin(); beg != min_input_shape.end(); ++beg) {
+    VLOG(1) << "engine input " << beg->first << " has min input shape " << beg->second[0];
+  }
+  for (auto beg = input_names.begin(); beg != input_names.end(); ++beg) {
+    VLOG(1) << "engine has input " << *beg;
+  }
 
   auto allow_build_at_runtime = Get<bool>("trt_allow_build_at_runtime");
   auto shape_range_info_path = Get<std::string>("trt_shape_range_info_path");
@@ -289,10 +299,10 @@ void TensorRtSubgraphPass::CreateTensorRTOp(
   // when running in the 'use_serialize' mode, there is a bug.
   // serialization is affected by max_batch_size, but calibration is not.
   // So we use seperate engine keys in serialization and calibration.
-  auto engine_key = GenerateEngineKey(
-      input_names_with_id, output_names_with_id, std::to_string(0),
-      std::to_string(max_batch_size),
-      std::to_string(static_cast<int>(precision_mode)), false);
+  // auto engine_key = GenerateEngineKey(
+  //     input_names_with_id, output_names_with_id, std::to_string(0),
+  //     std::to_string(max_batch_size),
+  //     std::to_string(static_cast<int>(precision_mode)), false);
   auto calibration_engine_key =
       GenerateEngineKey(input_names_with_id, output_names_with_id,
                         std::to_string(0), std::to_string(max_batch_size),
@@ -310,7 +320,7 @@ void TensorRtSubgraphPass::CreateTensorRTOp(
   op_desc->SetAttr("enable_int8", enable_int8);
   op_desc->SetAttr("enable_fp16", enable_fp16);
   op_desc->SetAttr("use_calib_mode", use_calib_mode);
-  op_desc->SetAttr("engine_key", engine_key);
+  // op_desc->SetAttr("engine_key", engine_key);
   op_desc->SetAttr("calibration_engine_key", calibration_engine_key);
   op_desc->SetAttr("predictor_id", predictor_id);
 
@@ -368,36 +378,56 @@ void TensorRtSubgraphPass::CreateTensorRTOp(
   // When running fp16, the output accuracy of the model will be affected,
   // closing the plugin fp16 may bring some improvement on accuracy.
   bool disable_trt_plugin_fp16 = Get<bool>("disable_trt_plugin_fp16");
-  tensorrt::TensorRTEngine *trt_engine =
-      inference::Singleton<inference::tensorrt::TRTEngineManager>::Global()
-          .Create(engine_key + std::to_string(predictor_id), max_batch_size,
-                  Get<int>("workspace_size"), precision_mode, calibrator.get(),
-                  Get<int>("gpu_device_id"), min_input_shape, max_input_shape,
-                  opt_input_shape, disable_trt_plugin_fp16);
-  trt_engine->SetUseOSS(Get<bool>("use_oss"));
-  trt_engine->SetWithInterleaved(Get<bool>("with_interleaved"));
-  trt_engine->SetUseDLA(Get<bool>("trt_use_dla"));
-  trt_engine->SetDLACore(Get<int>("trt_dla_core"));
-  trt_engine->SetUseInspector(Get<bool>("use_inspector"));
+  // tensorrt::TensorRTEngine *trt_engine =
+  //     inference::Singleton<inference::tensorrt::TRTEngineManager>::Global()
+  //         .Create(engine_key + std::to_string(predictor_id), max_batch_size,
+  //                 Get<int>("workspace_size"), precision_mode, calibrator.get(),
+  //                 Get<int>("gpu_device_id"), min_input_shape, max_input_shape,
+  //                 opt_input_shape, disable_trt_plugin_fp16);
 
-  trt_engine->SetWithErnie(
-      (graph->Has(framework::ir::kEmbEltwiseLayernormPass) &&
-       graph->Has(framework::ir::kMultiheadMatmulPass)) ||
-      (graph->Has(framework::ir::kPrelnEmbEltwiseLayernormPass) &&
-       graph->Has(framework::ir::kMultiheadMatmulPass)));
-
-  if (use_static_engine) {
-    trt_engine_serialized_data = GetTrtEngineSerializedData(
-        Get<std::string>("model_opt_cache_dir"), engine_key);
-    // we can load the engine info serialized before from the disk.
-    if (!trt_engine_serialized_data.empty()) {
-      trt_engine->Deserialize(trt_engine_serialized_data);
-      LOG(INFO) << "Load TRT Optimized Info from "
-                << GetTrtEngineSerializedPath(
-                       Get<std::string>("model_opt_cache_dir"), engine_key);
-      return;
-    }
+  /*  Update@wufeisheng()2022.6.9: 
+   We don't need more than one trt engine for one predictor.
+   The engine name is predictor_id. If a predictor already has one engine, just get it.
+  */
+  tensorrt::TensorRTEngine *trt_engine = nullptr;
+  if (inference::Singleton<inference::tensorrt::TRTEngineManager>::Global().Has(std::to_string(predictor_id))) {
+    trt_engine = inference::Singleton<inference::tensorrt::TRTEngineManager>::Global().Get(std::to_string(predictor_id));
+    //If engine has been created, some specific info like input dynamic shape should be added to engine.
+    //Optim profile of this engine op will be created here.
+    trt_engine->AddEngineOp(min_input_shape, max_input_shape, opt_input_shape);
+  } else {
+    trt_engine = inference::Singleton<inference::tensorrt::TRTEngineManager>::Global()
+          .Create(std::to_string(predictor_id)), max_batch_size,
+          Get<int>("workspace_size"), precision_mode, calibrator.get(),
+          Get<int>("gpu_device_id"), min_input_shape, max_input_shape,
+          opt_input_shape, disable_trt_plugin_fp16);
+    trt_engine->SetUseOSS(Get<bool>("use_oss"));
+    trt_engine->SetWithInterleaved(Get<bool>("with_interleaved"));
+    trt_engine->SetUseDLA(Get<bool>("trt_use_dla"));
+    trt_engine->SetDLACore(Get<int>("trt_dla_core"));
+    trt_engine->SetUseInspector(Get<bool>("use_inspector"));
+    trt_engine->SetWithErnie(
+        (graph->Has(framework::ir::kEmbEltwiseLayernormPass) &&
+        graph->Has(framework::ir::kMultiheadMatmulPass)) ||
+        (graph->Has(framework::ir::kPrelnEmbEltwiseLayernormPass) &&
+        graph->Has(framework::ir::kMultiheadMatmulPass)));
   }
+  //Set engine_op_index for current engine op
+  op_desc->SetAttr("engine_op_index", trt_engine->engine_op_num()-1);
+
+
+  // if (use_static_engine) {
+  //   trt_engine_serialized_data = GetTrtEngineSerializedData(
+  //       Get<std::string>("model_opt_cache_dir"), engine_key);
+  //   // we can load the engine info serialized before from the disk.
+  //   if (!trt_engine_serialized_data.empty()) {
+  //     trt_engine->Deserialize(trt_engine_serialized_data);
+  //     LOG(INFO) << "Load TRT Optimized Info from "
+  //               << GetTrtEngineSerializedPath(
+  //                      Get<std::string>("model_opt_cache_dir"), engine_key);
+  //     return;
+  //   }
+  // }
   // the following code will NOT run in following situation:
   // 1. calibraion mode (generate trt int8 calibraiton table data)
   // 2. already load serialized trt engine info.
