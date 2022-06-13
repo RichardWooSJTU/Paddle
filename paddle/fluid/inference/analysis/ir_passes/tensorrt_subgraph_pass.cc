@@ -135,6 +135,30 @@ void TensorRtSubgraphPass::CreateTensorRTOp(
   // const framework::BlockDesc& main_block = program_desc->Block(0);
   framework::BlockDesc *new_block = program_desc->AppendBlock(main_block);
 
+  auto predictor_id = Get<int>("predictor_id");
+
+  /*  Update@wufeisheng()2022.6.9:
+   We don't need more than one trt engine for one predictor.
+   The engine name is predictor_id. If a predictor already has one engine, just
+   get it.
+   Cause we need to add suffix for input name and dynamic shape
+  */
+  tensorrt::TensorRTEngine *trt_engine = nullptr;
+  int engine_op_num = 0;
+  if (inference::Singleton<inference::tensorrt::TRTEngineManager>::Global().Has(
+          std::to_string(predictor_id))) {
+    trt_engine =
+        inference::Singleton<inference::tensorrt::TRTEngineManager>::Global()
+            .Get(std::to_string(predictor_id));
+    engine_op_num = trt_engine->engine_op_num();
+  }
+  std::string suffix;
+  if (engine_op_num == 0) {
+    suffix = suffix + "_0";
+  } else {
+    suffix = suffix + "_" + std::to_string(engine_op_num);
+  }
+
   // A fake block desc.
   framework::proto::BlockDesc block_proto;
   framework::BlockDesc block_desc(nullptr, &block_proto);
@@ -143,6 +167,7 @@ void TensorRtSubgraphPass::CreateTensorRTOp(
   LOG(INFO) << "---  detect a sub-graph with " << subgraph.size() << " nodes";
 
   for (auto *node : subgraph) {
+    VLOG(1) << "node " << node->Name() << " is using building block";
     auto *new_block_op = new_block->AppendOp();
     auto *op = block_desc.AppendOp();
     *new_block_op->Proto() = *node->Op()->Proto();
@@ -160,21 +185,83 @@ void TensorRtSubgraphPass::CreateTensorRTOp(
   // problem, so we filter them out.
   std::vector<std::string> params_not_shared;
 
+  auto min_input_shape =
+      Get<std::map<std::string, std::vector<int>>>("min_input_shape");
+  auto max_input_shape =
+      Get<std::map<std::string, std::vector<int>>>("max_input_shape");
+  auto opt_input_shape =
+      Get<std::map<std::string, std::vector<int>>>("optim_input_shape");
+
+  // temporally, we need to extract them first and re-insert them to change the
+  // key name
+
+  for (auto input_shape : min_input_shape) {
+    auto map_node = min_input_shape.extract(input_shape.first);
+    if (engine_op_num == 0) {
+      map_node.key() = map_node.key() + "_0";
+    } else {
+      map_node.key() = map_node.key() + "_" + std::to_string(engine_op_num);
+    }
+    min_input_shape.insert(std::move(map_node));
+  }
+
+  for (auto &input_shape : max_input_shape) {
+    auto map_node = max_input_shape.extract(input_shape.first);
+    if (engine_op_num == 0) {
+      map_node.key() = map_node.key() + "_0";
+    } else {
+      map_node.key() = map_node.key() + "_" + std::to_string(engine_op_num);
+    }
+    max_input_shape.insert(std::move(map_node));
+  }
+
+  for (auto &input_shape : opt_input_shape) {
+    auto map_node = opt_input_shape.extract(input_shape.first);
+    if (engine_op_num == 0) {
+      map_node.key() = map_node.key() + "_0";
+    } else {
+      map_node.key() = map_node.key() + "_" + std::to_string(engine_op_num);
+    }
+    opt_input_shape.insert(std::move(map_node));
+  }
+  VLOG(1) << "finish input shape rename";
+
+  if (inference::Singleton<inference::tensorrt::TRTEngineManager>::Global().Has(
+          std::to_string(predictor_id))) {
+    // If engine has been created, some specific info like input dynamic shape
+    // should be added to engine.
+    // Optim profile of this engine op will be created here.
+    VLOG(1) << "I cannot understand";
+    if (trt_engine == nullptr)
+      VLOG(1) << "trt_engine == nullptr ";
+    else
+      VLOG(1) << "trt_engine != nullptr ";
+    trt_engine->AddEngineOp(min_input_shape, max_input_shape, opt_input_shape);
+    VLOG(1) << "finish AddEngineOp";
+  }
+
   // The node->inputs contains input tensors and parameters.
-  //TODO: Although deleting params shared by more than 1 ops, there will be problem, 
+  // TODO: Although deleting params shared by more than 1 ops, there will be
+  // problem,
   // but if these ops are all trt engine op...... we still should remove them
   for (auto *x : node->inputs) {
-    input_names.insert(x->Name());
+    if (std::count(graph_params.begin(), graph_params.end(), x->Name()) > 0) {
+      input_names.insert(x->Name());
+    } else {
+      input_names.insert(x->Name() + suffix);
+    }
+
     input_names_with_id.insert(x->Name() + std::to_string(x->id()));
     if (std::count(graph_params.begin(), graph_params.end(), x->Name()) > 0) {
       params.push_back(x->Name());
     }
-    if (std::count(graph_params.begin(), graph_params.end(), x->Name()) > 0 /*&&
-        x->outputs.size() <= 1*/) { // debuggggggg
+    if (std::count(graph_params.begin(), graph_params.end(), x->Name()) >
+        0 /*&&
+        x->outputs.size() <= 1*/) {  // debuggggggg
       params_not_shared.push_back(x->Name());
     }
   }
-
+  VLOG(1) << "finish input_names insert";
   std::set<std::string> output_names;
   std::set<std::string> output_names_with_id;
   std::map<std::string, int> origin_name_output_dims;
@@ -183,7 +270,7 @@ void TensorRtSubgraphPass::CreateTensorRTOp(
     output_names_with_id.insert(x->Name() + std::to_string(x->id()));
     origin_name_output_dims[x->Name()] = x->Var()->GetShape().size();
   }
-
+  VLOG(1) << "finish output_names insert";
   std::unordered_map<std::string, std::string> output_name_map;
   std::unordered_map<std::string, framework::ir::Node *> graph_var_map;
 
@@ -192,26 +279,13 @@ void TensorRtSubgraphPass::CreateTensorRTOp(
       graph_var_map[node->Name()] = node;
     }
   }
+  VLOG(1) << "finish graph_var_map insert";
   auto precision_mode = Get<AnalysisConfig::Precision>("precision_mode");
   bool enable_fp16 = false;
   if (precision_mode == AnalysisConfig::Precision::kHalf) enable_fp16 = true;
   auto enable_int8 = Get<bool>("enable_int8");
   auto use_calib_mode = Get<bool>("use_calib_mode");
   auto &subgraph_nodes = *framework::ir::Agent(node).subgraph();
-  auto min_input_shape =
-      Get<std::map<std::string, std::vector<int>>>("min_input_shape");
-  auto max_input_shape =
-      Get<std::map<std::string, std::vector<int>>>("max_input_shape");
-  auto opt_input_shape =
-      Get<std::map<std::string, std::vector<int>>>("optim_input_shape");
-
-  //debug 
-  for (auto beg = min_input_shape.begin(); beg != min_input_shape.end(); ++beg) {
-    VLOG(1) << "engine input " << beg->first << " has min input shape " << beg->second[0];
-  }
-  for (auto beg = input_names.begin(); beg != input_names.end(); ++beg) {
-    VLOG(1) << "engine has input " << *beg;
-  }
 
   auto allow_build_at_runtime = Get<bool>("trt_allow_build_at_runtime");
   auto shape_range_info_path = Get<std::string>("trt_shape_range_info_path");
@@ -239,6 +313,19 @@ void TensorRtSubgraphPass::CreateTensorRTOp(
   RenameAndGetOutputs(subgraph_nodes, &block_desc, input_names_with_id,
                       &output_names_with_id, &output_names, &output_name_map,
                       graph_var_map, !enable_int8);
+
+  // debug
+  for (auto beg = min_input_shape.begin(); beg != min_input_shape.end();
+       ++beg) {
+    VLOG(1) << "engine input " << beg->first << " has min input shape "
+            << beg->second[0];
+  }
+  for (auto beg = input_names.begin(); beg != input_names.end(); ++beg) {
+    VLOG(1) << "engine has input " << *beg;
+  }
+  for (auto beg = output_names.begin(); beg != output_names.end(); ++beg) {
+    VLOG(1) << "engine has output " << *beg;
+  }
 
   // When tensorrt engine runs at the end of the operation,
   // output_mapping help us copy the data from the renamed ITensor
@@ -307,7 +394,6 @@ void TensorRtSubgraphPass::CreateTensorRTOp(
       GenerateEngineKey(input_names_with_id, output_names_with_id,
                         std::to_string(0), std::to_string(max_batch_size),
                         std::to_string(static_cast<int>(precision_mode)), true);
-  auto predictor_id = Get<int>("predictor_id");
 
   // Get "" when there is no cached calibration table data.
   std::string calibration_data = "";
@@ -320,13 +406,12 @@ void TensorRtSubgraphPass::CreateTensorRTOp(
   op_desc->SetAttr("enable_int8", enable_int8);
   op_desc->SetAttr("enable_fp16", enable_fp16);
   op_desc->SetAttr("use_calib_mode", use_calib_mode);
-  // op_desc->SetAttr("engine_key", engine_key);
+  op_desc->SetAttr("engine_key", std::to_string(predictor_id));
   op_desc->SetAttr("calibration_engine_key", calibration_engine_key);
   op_desc->SetAttr("predictor_id", predictor_id);
 
   std::string trt_engine_serialized_data = "";
   op_desc->SetAttr("engine_serialized_data", trt_engine_serialized_data);
-  op_desc->Flush();
 
   std::unique_ptr<tensorrt::TRTInt8Calibrator> calibrator;
   if (enable_int8 && calibration_data.size() != 0) {
@@ -381,26 +466,20 @@ void TensorRtSubgraphPass::CreateTensorRTOp(
   // tensorrt::TensorRTEngine *trt_engine =
   //     inference::Singleton<inference::tensorrt::TRTEngineManager>::Global()
   //         .Create(engine_key + std::to_string(predictor_id), max_batch_size,
-  //                 Get<int>("workspace_size"), precision_mode, calibrator.get(),
-  //                 Get<int>("gpu_device_id"), min_input_shape, max_input_shape,
+  //                 Get<int>("workspace_size"), precision_mode,
+  //                 calibrator.get(),
+  //                 Get<int>("gpu_device_id"), min_input_shape,
+  //                 max_input_shape,
   //                 opt_input_shape, disable_trt_plugin_fp16);
 
-  /*  Update@wufeisheng()2022.6.9: 
-   We don't need more than one trt engine for one predictor.
-   The engine name is predictor_id. If a predictor already has one engine, just get it.
-  */
-  tensorrt::TensorRTEngine *trt_engine = nullptr;
-  if (inference::Singleton<inference::tensorrt::TRTEngineManager>::Global().Has(std::to_string(predictor_id))) {
-    trt_engine = inference::Singleton<inference::tensorrt::TRTEngineManager>::Global().Get(std::to_string(predictor_id));
-    //If engine has been created, some specific info like input dynamic shape should be added to engine.
-    //Optim profile of this engine op will be created here.
-    trt_engine->AddEngineOp(min_input_shape, max_input_shape, opt_input_shape);
-  } else {
-    trt_engine = inference::Singleton<inference::tensorrt::TRTEngineManager>::Global()
-          .Create(std::to_string(predictor_id)), max_batch_size,
-          Get<int>("workspace_size"), precision_mode, calibrator.get(),
-          Get<int>("gpu_device_id"), min_input_shape, max_input_shape,
-          opt_input_shape, disable_trt_plugin_fp16);
+  if (trt_engine == nullptr) {
+    trt_engine =
+        inference::Singleton<inference::tensorrt::TRTEngineManager>::Global()
+            .Create(std::to_string(predictor_id), max_batch_size,
+                    Get<int>("workspace_size"), precision_mode,
+                    calibrator.get(), Get<int>("gpu_device_id"),
+                    min_input_shape, max_input_shape, opt_input_shape,
+                    disable_trt_plugin_fp16);
     trt_engine->SetUseOSS(Get<bool>("use_oss"));
     trt_engine->SetWithInterleaved(Get<bool>("with_interleaved"));
     trt_engine->SetUseDLA(Get<bool>("trt_use_dla"));
@@ -408,13 +487,13 @@ void TensorRtSubgraphPass::CreateTensorRTOp(
     trt_engine->SetUseInspector(Get<bool>("use_inspector"));
     trt_engine->SetWithErnie(
         (graph->Has(framework::ir::kEmbEltwiseLayernormPass) &&
-        graph->Has(framework::ir::kMultiheadMatmulPass)) ||
+         graph->Has(framework::ir::kMultiheadMatmulPass)) ||
         (graph->Has(framework::ir::kPrelnEmbEltwiseLayernormPass) &&
-        graph->Has(framework::ir::kMultiheadMatmulPass)));
+         graph->Has(framework::ir::kMultiheadMatmulPass)));
   }
-  //Set engine_op_index for current engine op
-  op_desc->SetAttr("engine_op_index", trt_engine->engine_op_num()-1);
-
+  // Set engine_op_index for current engine op
+  op_desc->SetAttr("engine_op_index", trt_engine->engine_op_num());
+  op_desc->Flush();
 
   // if (use_static_engine) {
   //   trt_engine_serialized_data = GetTrtEngineSerializedData(
@@ -438,15 +517,15 @@ void TensorRtSubgraphPass::CreateTensorRTOp(
   framework::BlockDesc block_desc_temp(nullptr, block_desc.Proto());
   std::unordered_set<std::string> param_set(params.begin(), params.end());
 
-//  for (size_t i = 0; i < block_desc_temp.OpSize(); ++i) {
-//    LOG(INFO) << "========One Op Begin======";
-//    LOG(INFO) << block_desc_temp.Op(i)->Type();
-//    auto ins = block_desc_temp.Op(i)->InputArgumentNames();
-//    for (size_t j = 0; j < ins.size(); ++j) {
-//      LOG(INFO) << ins[j];
-//    }
-//    LOG(INFO) << "========One Op End======";
-//  }
+  //  for (size_t i = 0; i < block_desc_temp.OpSize(); ++i) {
+  //    LOG(INFO) << "========One Op Begin======";
+  //    LOG(INFO) << block_desc_temp.Op(i)->Type();
+  //    auto ins = block_desc_temp.Op(i)->InputArgumentNames();
+  //    for (size_t j = 0; j < ins.size(); ++j) {
+  //      LOG(INFO) << ins[j];
+  //    }
+  //    LOG(INFO) << "========One Op End======";
+  //  }
 
   inference::Singleton<inference::tensorrt::OpConverter>::Global()
       .ConvertBlockToTRTEngine(
@@ -455,19 +534,19 @@ void TensorRtSubgraphPass::CreateTensorRTOp(
           param_set, output_mapping, trt_engine);
 
   LOG(INFO) << "===========ConvertBlockToTRTEngine end==========";
-  if (use_static_engine) {
-    nvinfer1::IHostMemory *serialized_engine_data = trt_engine->Serialize();
-    trt_engine_serialized_data =
-        std::string((const char *)serialized_engine_data->data(),
-                    serialized_engine_data->size());
-    SaveTrtEngineSerializedDataToFile(
-        GetTrtEngineSerializedPath(Get<std::string>("model_opt_cache_dir"),
-                                   engine_key),
-        trt_engine_serialized_data);
-    LOG(INFO) << "Save TRT Optimized Info to "
-              << GetTrtEngineSerializedPath(
-                     Get<std::string>("model_opt_cache_dir"), engine_key);
-  }
+  // if (use_static_engine) {
+  //   nvinfer1::IHostMemory *serialized_engine_data = trt_engine->Serialize();
+  //   trt_engine_serialized_data =
+  //       std::string((const char *)serialized_engine_data->data(),
+  //                   serialized_engine_data->size());
+  //   SaveTrtEngineSerializedDataToFile(
+  //       GetTrtEngineSerializedPath(Get<std::string>("model_opt_cache_dir"),
+  //                                  engine_key),
+  //       trt_engine_serialized_data);
+  //   LOG(INFO) << "Save TRT Optimized Info to "
+  //             << GetTrtEngineSerializedPath(
+  //                    Get<std::string>("model_opt_cache_dir"), engine_key);
+  // }
 }
 
 }  // namespace analysis

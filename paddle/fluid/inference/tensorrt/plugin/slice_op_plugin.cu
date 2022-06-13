@@ -324,6 +324,7 @@ int SlicePluginDynamic::enqueue(const nvinfer1::PluginTensorDesc *input_desc,
   VLOG(3) << "SlicePluginDynamic::enqueue input: ";
   for (size_t i = 0; i < input_dims.nbDims; i++) {
     VLOG(3) << "dims: " << input_dims.d[i];
+    if (input_dims.d[i] == 0) return cudaGetLastError() != cudaSuccess;
   }
 
   VLOG(3) << "SlicePluginDynamic::enqueue output: ";

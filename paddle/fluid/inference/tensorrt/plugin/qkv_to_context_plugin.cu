@@ -276,6 +276,7 @@ int QkvToContextPluginDynamic::enqueue(
   VLOG(3) << "QkvToContextPluginDynamic::enqueue input: ";
   for (size_t i = 0; i < input_dims.nbDims; i++) {
     VLOG(3) << "dims: " << input_dims.d[i];
+    if (input_dims.d[i] == 0) return cudaGetLastError() != cudaSuccess;
   }
 
   int input_num = ProductDim(input_dims);
@@ -321,10 +322,10 @@ int QkvToContextPluginDynamic::enqueue(
       qk_bias = temp_qk_bias;
     }
     const float *input1_data = static_cast<const float *>(qk_bias);
-    if (transpose_) { 
+    if (transpose_) {
       // BxSx3xNxH => tptr: 3xBxNxSxH.
       TransposeQKV(batch, seq_len, head_size_, head_number_, input0_data, tptr,
-                 stream);
+                   stream);
     } else {
       tptr = const_cast<float *>(input0_data);
     }
@@ -372,10 +373,10 @@ int QkvToContextPluginDynamic::enqueue(
       qk_bias = temp_qk_bias;
     }
     const half *input1_data = static_cast<const half *>(qk_bias);
-    if (transpose_) { 
+    if (transpose_) {
       // BxSx3xNxH => tptr: 3xBxNxSxH.
       TransposeQKV(batch, seq_len, head_size_, head_number_, input0_data, tptr,
-                 stream);
+                   stream);
     } else {
       tptr = const_cast<half *>(input0_data);
     }

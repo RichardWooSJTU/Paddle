@@ -268,11 +268,12 @@ class TensorRTEngineOp : public framework::OperatorBase {
       trt_engine_ =
           inference::Singleton<inference::tensorrt::TRTEngineManager>::Global()
               .Get(std::to_string(predictor_id_));
-      /*Update@wufeisheng()2022.6.9: 
-      When create first tensorrt op, we build inference tensorrt engine by invoking freezenetwork.
+      /*Update@wufeisheng()2022.6.9:
+      When create first tensorrt op, we build inference tensorrt engine by
+      invoking freezenetwork.
       This may spend a lot of time
       */
-      nvinfer1::ICudaEngine* infer_engine = trt_engine_->engine();
+      nvinfer1::ICudaEngine *infer_engine = trt_engine_->engine();
       if (nullptr == infer_engine) {
         trt_engine_->FreezeNetwork();
         trt_engine_->ClearWeights();
@@ -317,19 +318,20 @@ class TensorRTEngineOp : public framework::OperatorBase {
 
   void RunImpl(const framework::Scope &scope,
                const platform::Place &dev_place) const override {
-    //ProfilerStart("tensorrt_engine_op.perf");
+    // ProfilerStart("tensorrt_engine_op.perf");
     if (calibration_mode_ == true) {
       RunCalibration(scope, dev_place);
       return;
     }
     auto *trt_engine = GetEngine(scope, dev_place);
     if (use_inspector_) {
-      trt_engine->GetEngineInfo();
+      trt_engine->GetEngineInfo(engine_op_index_);
     }
     if (trt_engine->with_dynamic_shape()) {
       // get runtime input shapes.
       std::map<std::string, std::vector<int32_t>> runtime_input_shape;
       for (auto name : runtime_input_names_) {
+        name = name.substr(0, name.size() - 2);  // TODO: 超过10个engine就不对了
         auto &t = inference::analysis::GetFromScope<framework::LoDTensor>(scope,
                                                                           name);
         VLOG(4) << "trt engine runtime input name(" << name << "), dims("
@@ -398,7 +400,7 @@ class TensorRTEngineOp : public framework::OperatorBase {
       }
     }
     RunTrt(scope, dev_place, trt_engine);
-    //ProfilerStop();
+    // ProfilerStop();
   }
 
   void RunCalibration(const framework::Scope &scope,
@@ -453,7 +455,6 @@ class TensorRTEngineOp : public framework::OperatorBase {
 
   void RunTrt(const framework::Scope &scope, const platform::Place &dev_place,
               TensorRTEngine *engine) const {
-   
     int runtime_batch = -1;
     platform::DeviceContextPool &pool = platform::DeviceContextPool::Instance();
     auto &dev_ctx = *pool.Get(dev_place);
@@ -486,31 +487,33 @@ class TensorRTEngineOp : public framework::OperatorBase {
       binding_offset = engine->GetBindingsOffset(engine_op_index_);
     }
     std::map<std::string, std::vector<int>> max_input_shape =
-            engine->max_input_shape();
+        engine->max_input_shape();
 
-    //Set other engine op input as 0
-    for (int i = 0; i < engine->engine_op_num; i++) {
+    // Set other engine op input as 0
+    for (int i = 0; i < engine->engine_op_num(); i++) {
       if (i == engine_op_index_) continue;
-      const std::map<std::string, std::vector<int>>& current_max_input_shape = 
-            engine->max_input_shapes()[i];
+      const std::map<std::string, std::vector<int>> &current_max_input_shape =
+          engine->max_input_shapes()[i];
       for (const auto &input : current_max_input_shape) {
         const int bind_index =
-            engine->engine()->getBindingIndex(input.first.c_str()) + binding_offset;
+            engine->engine()->getBindingIndex(input.first.c_str()) +
+            binding_offset;
+        std::vector<int> zero_dimension{0, 0};
         trt_context->setBindingDimensions(
-                bind_index, inference::tensorrt::Vec2TRT_Dims({0,0}, input.first.c_str(), true));
+            bind_index, inference::tensorrt::Vec2TRT_Dims(
+                            zero_dimension, input.first.c_str(), true));
       }
     }
-    
 
-   
-    for (const auto &x : runtime_input_names_) {
+    for (const auto &name : runtime_input_names_) {
       // convert input and copy to TRT engine's buffer
+      auto x = name.substr(0, name.size() - 2);  // TODO: 超过10个engine就不对了
       auto &t =
           inference::analysis::GetFromScope<framework::LoDTensor>(scope, x);
-      
+
       // check the input_tensor
       if (!platform::is_gpu_place(t.place())) {
-        VLOG(3) << "Set input location as host, input: " <<  x;
+        VLOG(3) << "Set input location as host, input: " << x;
         // auto* i_tensor = engine->GetITensor(x);
         // i_tensor->setLocation(nvinfer1::TensorLocation::kHOST);
         // VLOG(3) << "TransData from CPU to GPU, input: " <<  x;
@@ -569,7 +572,7 @@ class TensorRTEngineOp : public framework::OperatorBase {
         }
       } else {
 #if IS_TRT_VERSION_GE(6000)
-        
+
         // if (x=="stack_2.tmp_0") {
         //   t_shape = {1,32,1,81};
         // }
@@ -580,16 +583,17 @@ class TensorRTEngineOp : public framework::OperatorBase {
         // for(auto i : t_shape) {
         //   VLOG(3) << i;
         // }
-         // Bind current engine op input tensor to TRT.
-        if(x=="stack_2.tmp_0" || x=="stack_3.tmp_0") {
+        // Bind current engine op input tensor to TRT.
+        if (x == "stack_2.tmp_0" || x == "stack_3.tmp_0") {
           // std::vector<int64_t> tmp_shape(max_input_shape[x].begin(),
           //                                       max_input_shape[x].end());
           VLOG(3) << "set bindings, x=" << x << "; shape:";
-          for(auto i : max_input_shape[x]) {
+          for (auto i : max_input_shape[x]) {
             VLOG(3) << i;
           }
           trt_context->setBindingDimensions(
-              bind_index, inference::tensorrt::Vec2TRT_Dims(max_input_shape[x], x, true));
+              bind_index,
+              inference::tensorrt::Vec2TRT_Dims(max_input_shape[x], x, true));
         } else {
           trt_context->setBindingDimensions(
               bind_index, inference::tensorrt::Vec2TRT_Dims(t_shape, x, true));
@@ -611,8 +615,9 @@ class TensorRTEngineOp : public framework::OperatorBase {
             platform::errors::Fatal("The TRT Engine OP only support "
                                     "float/int32_t/int64_t/float16 input."));
       }
-      if (buffers[bind_index]==nullptr) {
-        VLOG(3) << "Input binding is null, bind_index="<<bind_index << "; name=" << x;
+      if (buffers[bind_index] == nullptr) {
+        VLOG(3) << "Input binding is null, bind_index=" << bind_index
+                << "; name=" << x;
       }
     }
 
@@ -666,10 +671,10 @@ class TensorRTEngineOp : public framework::OperatorBase {
           fluid_t->mutable_data(dev_place, TRT2FluidDataType(trt_type)));
       output_index += 1;
 
-      if (buffers[bind_index]==nullptr) {
-        VLOG(3) << "Ouput binding is null, bind_index="<<bind_index << "; name=" << y;
+      if (buffers[bind_index] == nullptr) {
+        VLOG(3) << "Ouput binding is null, bind_index=" << bind_index
+                << "; name=" << y;
       }
-
     }
 
     if (!engine->with_dynamic_shape()) {
@@ -696,11 +701,9 @@ class TensorRTEngineOp : public framework::OperatorBase {
               runtime_batch, max_batch_size_));
     }
     // Execute the engine.
-    engine->Execute(runtime_batch, &buffers, stream);
+    engine->Execute(runtime_batch, &buffers, stream, engine_op_index_);
     // cudaDeviceSynchronize();
     VLOG(3) << "finish tensorrt engine op.";
-    
-
   }
 
   TensorRTEngine *GetEngine(const framework::Scope &scope,

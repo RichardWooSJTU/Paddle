@@ -85,8 +85,8 @@ class OpConverter {
             add_weight_op_set.count(op_type), 0,
             platform::errors::Unimplemented("Unsupported elementwise type %s",
                                             op_type.c_str()));
-        it = Registry<OpConverter>::Global().Lookup(
-            "elementwise_" + op_type + "_weight");
+        it = Registry<OpConverter>::Global().Lookup("elementwise_" + op_type +
+                                                    "_weight");
         PADDLE_ENFORCE_NOT_NULL(
             it, platform::errors::Unimplemented(
                     "no OpConverter for optype [%s]", op_desc.Type()));
@@ -198,12 +198,16 @@ class OpConverter {
             BOOST_GET_CONST(float, op_desc.GetAttr(inputs_name[i]));
         engine->SetTensorDynamicRange(input_itensor, input_scale);
         VLOG(3) << "name:  " << input_tensor_name << "; type: ";
-        switch(input_itensor->getType())
-            {
-            case nvinfer1::DataType::kFLOAT: VLOG(3) << "kFLOAT"; break;
-            case nvinfer1::DataType::kHALF: VLOG(3) << "kHALF"; break;
-            default: break;
-            }
+        switch (input_itensor->getType()) {
+          case nvinfer1::DataType::kFLOAT:
+            VLOG(3) << "kFLOAT";
+            break;
+          case nvinfer1::DataType::kHALF:
+            VLOG(3) << "kHALF";
+            break;
+          default:
+            break;
+        }
         VLOG(1) << "Set input tensor scale = " << input_scale
                 << " for tensor: " << input_tensor_name << ".";
       }
@@ -230,12 +234,12 @@ class OpConverter {
     for (int i = 0; i < block.ops_size(); i++) {
       const auto& op = block.ops(i);
 
-//      framework::OpDesc op_desc_tmp(op, nullptr);
-//      LOG(INFO) << op_desc_tmp.Type();
-//      auto ins = op_desc_tmp.InputArgumentNames();
-//      for (size_t k = 0; k < ins.size(); ++k) {
-//        LOG(INFO) << ins[k];
-//      }
+      //      framework::OpDesc op_desc_tmp(op, nullptr);
+      //      LOG(INFO) << op_desc_tmp.Type();
+      //      auto ins = op_desc_tmp.InputArgumentNames();
+      //      for (size_t k = 0; k < ins.size(); ++k) {
+      //        LOG(INFO) << ins[k];
+      //      }
 
       ConvertOp(op, parameters, scope, engine);
     }
@@ -251,10 +255,14 @@ class OpConverter {
     bool all_dynamic_shape_set = true;
     for (auto& input : inputs) {
       if (parameters.count(input)) continue;
-      auto* var = block_desc->FindVar(input);
+
+      auto origin_input_name =
+          input.substr(0, input.size() - 2);  // TODO: 超过10个engine就不对了
+
+      auto* var = block_desc->FindVar(origin_input_name);
       PADDLE_ENFORCE_NOT_NULL(
           var, platform::errors::NotFound("no variable called %s in block.",
-                                          input.c_str()));
+                                          origin_input_name.c_str()));
       PADDLE_ENFORCE_EQ(
           var->GetType(), FluidDT::VarType_Type_LOD_TENSOR,
           platform::errors::InvalidArgument("TensorRT engine only takes "
@@ -275,11 +283,14 @@ class OpConverter {
         }
         std::vector<int64_t> input_shape;
         input_shape.push_back(-1);
+        VLOG(1) << "input " << origin_input_name << " has rank " << ranks;
         for (size_t i = 1; i < ranks; i++) {
+          VLOG(1) << "rank " << i << "min " << min_input_shape[i];
           if (min_input_shape[i] != max_input_shape[i]) {
             input_shape.push_back(-1);
           } else {
             input_shape.push_back(min_input_shape[i]);
+            //   // input_shape.push_back(0);
             // the i dimension should be same.
             PADDLE_ENFORCE_EQ(min_input_shape[i], optim_input_shape[i],
                               platform::errors::InvalidArgument(
@@ -288,21 +299,25 @@ class OpConverter {
           }
         }
 
-        nvinfer1::DataType dtype = FluidDataType2TRT(var->Proto()->type().lod_tensor().tensor().data_type());
-        if(input.rfind("fill_constant_batch_size", 0) == 0) {
-            dtype = nvinfer1::DataType::kHALF;
+        nvinfer1::DataType dtype = FluidDataType2TRT(
+            var->Proto()->type().lod_tensor().tensor().data_type());
+        if (input.rfind("fill_constant_batch_size", 0) == 0) {
+          dtype = nvinfer1::DataType::kHALF;
         }
-        engine->DeclareInput(
-            input, dtype,
-            Vec2TRT_Dims(input_shape, input, true));
-        
+        engine->DeclareInput(input, dtype,
+                             Vec2TRT_Dims(input_shape, input, true));
+
         VLOG(3) << "name:  " << input << "; type: ";
-        switch(dtype)
-            {
-            case nvinfer1::DataType::kFLOAT: VLOG(3) << "kFLOAT"; break;
-            case nvinfer1::DataType::kHALF: VLOG(3) << "kHALF"; break;
-            default: break;
-            }
+        switch (dtype) {
+          case nvinfer1::DataType::kFLOAT:
+            VLOG(3) << "kFLOAT";
+            break;
+          case nvinfer1::DataType::kHALF:
+            VLOG(3) << "kHALF";
+            break;
+          default:
+            break;
+        }
 
 #endif
       } else {

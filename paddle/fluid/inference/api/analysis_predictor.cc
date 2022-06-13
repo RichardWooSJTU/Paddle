@@ -188,7 +188,7 @@ bool AnalysisPredictor::Init(
   }
 
   // no matter with or without MKLDNN
-  //paddle::platform::SetNumThreads(config_.cpu_math_library_num_threads());
+  // paddle::platform::SetNumThreads(config_.cpu_math_library_num_threads());
 
   if (!PrepareScope(parent_scope)) {
     return false;
@@ -977,12 +977,11 @@ void AnalysisPredictor::OptimizeInferenceProgram() {
         auto &block = prog->Block(0);
         for (auto &op_desc : block.AllOps()) {
           if (op_desc->Type() == "tensorrt_engine") {
-            std::string engine_key =
-                BOOST_GET_CONST(std::string, op_desc->GetAttr("engine_key"));
+            // std::string engine_key =
+            //     BOOST_GET_CONST(std::string, op_desc->GetAttr("engine_key"));
             int engine_predictor_id =
                 BOOST_GET_CONST(int, op_desc->GetAttr("predictor_id"));
-            std::string engine_name =
-                engine_key + std::to_string(engine_predictor_id);
+            std::string engine_name = std::to_string(engine_predictor_id);
             if (paddle::inference::Singleton<
                     inference::tensorrt::TRTEngineManager>::Global()
                     .Has(engine_name)) {
@@ -1003,17 +1002,18 @@ void AnalysisPredictor::OptimizeInferenceProgram() {
   // debuggggggg
   framework::ProgramDesc *prog = inference_program_.get();
   VLOG(3) << "inference_program_ has blocks number: " << prog->Size();
-  for (size_t i=0; i<prog->Size(); i++) {
-    VLOG(3) << "------------block id: " << i<<"---------------";
-    framework::BlockDesc* block = prog->MutableBlock(i);
-    for (auto* op : block->AllOps()) {
-      VLOG(3) << "block_id: "<< i << "; op type: " << op->Type();
-      if (op->Type()=="while") {
+  for (size_t i = 0; i < prog->Size(); i++) {
+    VLOG(3) << "------------block id: " << i << "---------------";
+    framework::BlockDesc *block = prog->MutableBlock(i);
+    for (auto *op : block->AllOps()) {
+      VLOG(3) << "block_id: " << i << "; op type: " << op->Type();
+      if (op->Type() == "while") {
         op->SetBlockAttr("sub_block", prog->MutableBlock(4));
-        VLOG(3) << "update sub block of while to block-" << prog->MutableBlock(4)->ID();
+        VLOG(3) << "update sub block of while to block-"
+                << prog->MutableBlock(4)->ID();
       }
     }
-  } 
+  }
 }
 
 template <>
@@ -1312,7 +1312,7 @@ bool AnalysisPredictor::ZeroCopyRun() {
     return true;
   }
 #endif
-  //paddle::platform::SetNumThreads(config_.cpu_math_library_num_threads());
+// paddle::platform::SetNumThreads(config_.cpu_math_library_num_threads());
 #ifdef PADDLE_WITH_MKLDNN
   if (config_.use_mkldnn_) {
     std::vector<std::vector<int>> shape_vector;
@@ -1334,9 +1334,9 @@ bool AnalysisPredictor::ZeroCopyRun() {
   tensor_array_batch_cleaner_.CollectTensorArrays(sub_scope_);
   tensor_array_batch_cleaner_.ResetTensorArray();
 
-  // recover the cpu_math_library_num_threads to 1, in order to avoid thread
-  // conflict when integrating it into deployment service.
-  // paddle::platform::SetNumThreads(1);
+// recover the cpu_math_library_num_threads to 1, in order to avoid thread
+// conflict when integrating it into deployment service.
+// paddle::platform::SetNumThreads(1);
 #ifdef PADDLE_WITH_MKLDNN
   if (config_.use_mkldnn_) MkldnnPostReset();
 #endif

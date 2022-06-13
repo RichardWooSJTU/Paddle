@@ -50,9 +50,9 @@ void TensorRTEngine::InitNetwork() {
 }
 
 void TensorRTEngine::Execute(int batch_size, std::vector<void *> *buffers,
-                             cudaStream_t stream) {
+                             cudaStream_t stream, int engine_op_index) {
   freshDeviceId();
-  auto infer_context = context();
+  auto infer_context = context(engine_op_index);
   if (!with_dynamic_shape()) {
     infer_context->enqueue(batch_size, buffers->data(), stream, nullptr);
   } else {
@@ -198,8 +198,8 @@ void TensorRTEngine::FreezeNetwork() {
                 << dla_core_;
     }
   }
-  /*  Update@wufeisheng()2022.6.9: 
-    Set optim profile for each engine op. 
+  /*  Update@wufeisheng()2022.6.9:
+    Set optim profile for each engine op.
   */
   if (with_dynamic_shape_) {
 #if IS_TRT_VERSION_GE(6000)
@@ -209,7 +209,6 @@ void TensorRTEngine::FreezeNetwork() {
 #endif
   }
 
-  
 #if IS_TRT_VERSION_GE(8200)
   if (use_inspector_) {
     infer_builder_config_->setProfilingVerbosity(
@@ -241,7 +240,7 @@ void TensorRTEngine::FreezeNetwork() {
     cur_profile_num_ = 0;
   }
 
-//  GetEngineInfo();
+  //  GetEngineInfo();
 }
 
 nvinfer1::ITensor *TensorRTEngine::DeclareInput(const std::string &name,
@@ -261,7 +260,7 @@ nvinfer1::ITensor *TensorRTEngine::DeclareInput(const std::string &name,
                         "Input %s is not the input of TRT inference network. "
                         "Please recheck your input.",
                         name));
-  TensorRTEngine::SetITensor(name, input);
+  TensorRTEngine::SetITensor(name.substr(0, name.size() - 2), input);
   return input;
 }
 
@@ -305,18 +304,20 @@ void TensorRTEngine::SetITensor(const std::string &name,
   PADDLE_ENFORCE_NOT_NULL(
       tensor, platform::errors::InvalidArgument(
                   "Tensor named %s of TRT engine should not be null.", name));
+
+  if (itensor_map_.size() < engine_op_num_) itensor_map_.resize(engine_op_num_);
   PADDLE_ENFORCE_EQ(
-      0, itensor_map_.count(name),
+      0, itensor_map_[engine_op_num_ - 1].count(name),
       platform::errors::InvalidArgument(
           "Tensor named %s of TRT engine should not be duplicated", name));
-  itensor_map_[name] = tensor;
+  itensor_map_[engine_op_num_ - 1][name] = tensor;
 }
 
 nvinfer1::ITensor *TensorRTEngine::GetITensor(const std::string &name) {
-  PADDLE_ENFORCE_EQ(itensor_map_.count(name), true,
+  PADDLE_ENFORCE_EQ(itensor_map_[engine_op_num_ - 1].count(name), true,
                     platform::errors::NotFound(
                         "Tensor named %s is not found in TRT engine", name));
-  return itensor_map_[name];
+  return itensor_map_[engine_op_num_ - 1][name];
 }
 
 void TensorRTEngine::SetRuntimeBatch(size_t batch_size) {
@@ -383,7 +384,7 @@ void TensorRTEngine::GetEngineInfo() {
   LOG(INFO) << "====== engine info ======";
   std::unique_ptr<nvinfer1::IEngineInspector> infer_inspector(
       infer_engine_->createEngineInspector());
-  auto infer_context = context();
+  auto infer_context = context(0);
   infer_inspector->setExecutionContext(infer_context);
   LOG(INFO) << infer_inspector->getEngineInformation(
       nvinfer1::LayerInformationFormat::kONELINE);
@@ -393,72 +394,94 @@ void TensorRTEngine::GetEngineInfo() {
 #endif
 }
 
-void TensorRTEngine::SetOptimizationProfileImpl(const std::pair<std::string, std::vector<int>>& input,
-                                                std::vector<nvinfer1::IOptimizationProfile*>& optim_profile,
-                                                bool for_other_engine_op) {
+void TensorRTEngine::GetEngineInfo(int engine_op_index) {
+#if IS_TRT_VERSION_GE(8200)
+  LOG(INFO) << "====== engine info ======";
+  std::unique_ptr<nvinfer1::IEngineInspector> infer_inspector(
+      infer_engine_->createEngineInspector());
+  auto infer_context = context(engine_op_index);
+  infer_inspector->setExecutionContext(infer_context);
+  LOG(INFO) << infer_inspector->getEngineInformation(
+      nvinfer1::LayerInformationFormat::kONELINE);
+  LOG(INFO) << "====== engine info end ======";
+#else
+  LOG(INFO) << "Inspector needs TensorRT version 8.2 and after.";
+#endif
+}
+
+void TensorRTEngine::SetOptimizationProfileImpl(
+    const std::pair<std::string, std::vector<int>> &input,
+    nvinfer1::IOptimizationProfile *optim_profile, bool for_other_engine_op) {
 #if IS_TRT_VERSION_LT(7000)
   // trt6 will check all_of input > 0
   if (!(std::all_of(input.second.begin(), input.second.end(),
                     [](int x) { return x > 0; }) &&
-        std::all_of(max_input_shape_[input.first].begin(),
-                    max_input_shape_[input.first].end(),
+        std::all_of(all_max_input_shape_[input.first].begin(),
+                    all_max_input_shape_[input.first].end(),
                     [](int x) { return x > 0; }) &&
-        std::all_of(optim_input_shape_[input.first].begin(),
-                    optim_input_shape_[input.first].end(),
+        std::all_of(all_optim_input_shape_[input.first].begin(),
+                    all_optim_input_shape_[input.first].end(),
                     [](int x) { return x > 0; }))) {
     continue;
   }
 #endif
   VLOG(4) << "TRT dynamic_shape set " << input.first
           << " min: " << Vec2Str(input.second)
-          << ", max: " << Vec2Str(max_input_shape_[input.first])
-          << ", opt: " << Vec2Str(optim_input_shape_[input.first]);
+          << ", max: " << Vec2Str(all_max_input_shape_[input.first])
+          << ", opt: " << Vec2Str(all_optim_input_shape_[input.first]);
+  std::vector<int> zero_dimension(input.second.size(), 0);
+  for (int i = 1; i < zero_dimension.size(); ++i) {
+    zero_dimension[i] = input.second[i];
+  }
   if (!for_other_engine_op) {
     optim_profile->setDimensions(
-      input.first.c_str(), nvinfer1::OptProfileSelector::kMIN,
-      Vec2TRT_Dims(input.second, input.first, true));
+        input.first.c_str(), nvinfer1::OptProfileSelector::kMIN,
+        Vec2TRT_Dims(zero_dimension, input.first, true));
     optim_profile->setDimensions(
-      input.first.c_str(), nvinfer1::OptProfileSelector::kMAX,
-      Vec2TRT_Dims(all_max_input_shape_[input.first], input.first, true));
+        input.first.c_str(), nvinfer1::OptProfileSelector::kMAX,
+        Vec2TRT_Dims(all_max_input_shape_[input.first], input.first, true));
     optim_profile->setDimensions(
-      input.first.c_str(), nvinfer1::OptProfileSelector::kOPT,
-      Vec2TRT_Dims(all_optim_input_shape_[input.first], input.first, true));
+        input.first.c_str(), nvinfer1::OptProfileSelector::kOPT,
+        Vec2TRT_Dims(all_optim_input_shape_[input.first], input.first, true));
   } else {
     optim_profile->setDimensions(
-      input.first.c_str(), nvinfer1::OptProfileSelector::kMIN,
-      Vec2TRT_Dims({0, 0}, input.first, true));
+        input.first.c_str(), nvinfer1::OptProfileSelector::kMIN,
+        Vec2TRT_Dims(zero_dimension, input.first, true));
     optim_profile->setDimensions(
-      input.first.c_str(), nvinfer1::OptProfileSelector::kMAX,
-      Vec2TRT_Dims({0, 0}, input.first, true));
+        input.first.c_str(), nvinfer1::OptProfileSelector::kMAX,
+        Vec2TRT_Dims(zero_dimension, input.first, true));
     optim_profile->setDimensions(
-      input.first.c_str(), nvinfer1::OptProfileSelector::kOPT,
-      Vec2TRT_Dims({0, 0}, input.first, true));
+        input.first.c_str(), nvinfer1::OptProfileSelector::kOPT,
+        Vec2TRT_Dims(zero_dimension, input.first, true));
   }
-  
 }
 
 void TensorRTEngine::SetOptimizationProfile(int engine_op_index) {
   LOG(INFO) << "Run Paddle-TRT Dynamic Shape mode.";
   for (int i = 0; i < max_profile_num_; i++) {
-    for (int j = 0; j < engine_op_num_; j++ ) {
-      for (auto& input : min_input_shapes_[j]) {
+    for (int j = 0; j < engine_op_num_; j++) {
+      for (auto &input : min_input_shapes_[j]) {
         if (j == engine_op_index) {
-          //For current engine op, the corresponding optim profile will be set here
-          SetOptimizationProfileImpl(input, optim_profiles_[engine_op_index][i], false);
-        }else {
-          //For other op's input shape, 0 will be set.
-          SetOptimizationProfileImpl(input, optim_profiles_[engine_op_index][i], true);
+          // For current engine op, the corresponding optim profile will be set
+          // here
+          SetOptimizationProfileImpl(input, optim_profiles_[engine_op_index][i],
+                                     false);
+        } else {
+          // For other op's input shape, 0 will be set.
+          SetOptimizationProfileImpl(input, optim_profiles_[engine_op_index][i],
+                                     true);
         }
       }
-      infer_builder_config_->addOptimizationProfile(optim_profiles_[engine_op_index][i]);
     }
+    infer_builder_config_->addOptimizationProfile(
+        optim_profiles_[engine_op_index][i]);
   }
   if (WithFp16() && disable_trt_plugin_fp16()) {
     LOG(INFO) << "NOTE: In order to achieve higher accuracy, you have "
-                  "disabled the fp16 mode of TRT Plugin,\n"
+                 "disabled the fp16 mode of TRT Plugin,\n"
               << "you can reopen it with "
-                  "'config.SetDynamicShapeInfo(min_shape, max_shape, "
-                  "opt_shape, false /*disable_trt_plugin_fp16*/)'";
+                 "'config.SetDynamicShapeInfo(min_shape, max_shape, "
+                 "opt_shape, false /*disable_trt_plugin_fp16*/)'";
   }
 }
 

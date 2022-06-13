@@ -136,10 +136,14 @@ int LayerNormPluginDynamic::enqueue(
   int begin_norm_axis = begin_norm_axis_;
   float eps = eps_;
 
+  if (input_dims.d[0] == 0) return cudaGetLastError() != cudaSuccess;
+
   std::vector<int> input_shape;
   for (int i = 0; i < input_dims.nbDims; i++) {
     input_shape.push_back(input_dims.d[i]);
+    VLOG(1) << "input_shape " << i << " " << input_dims.d[i];
   }
+
   const auto input_ddim = phi::make_ddim(input_shape);
   auto matrix_dim = phi::flatten_to_2d(input_ddim, begin_norm_axis);
   int feature_size = static_cast<int>(matrix_dim[1]);
@@ -158,6 +162,9 @@ int LayerNormPluginDynamic::enqueue(
   auto input_type = input_desc[0].type;
   if (input_type == nvinfer1::DataType::kFLOAT) {
     VLOG(1) << "TRT Plugin DataType selected. LayerNorm-->fp32";
+    if (inputs == nullptr) {
+      VLOG(1) << "inputs is null";
+    }
     const float *input = reinterpret_cast<const float *>(inputs[0]);
     float *output = static_cast<float *>(outputs[0]);
     scale_t.Resize(phi::make_ddim({feature_size}));
