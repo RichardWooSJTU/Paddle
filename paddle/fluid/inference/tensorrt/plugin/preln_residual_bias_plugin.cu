@@ -135,6 +135,7 @@ int PrelnResidualBiasPluginDynamic<T>::enqueue(
   size_t num = ProductDim(input_dims);
   int hidden = input_dims.d[2];
   const size_t  rows = static_cast<size_t>(input_dims.d[0] * input_dims.d[1]); // batch * seq_length
+  if (rows == 0) return cudaGetLastError() != cudaSuccess;
   const size_t cols = static_cast<size_t>(input_dims.d[2]);
 
   auto input_type = input_desc[0].type;

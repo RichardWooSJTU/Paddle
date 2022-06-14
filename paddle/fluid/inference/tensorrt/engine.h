@@ -187,9 +187,9 @@ class TensorRTEngine {
       int max_batch, int max_workspace,
       AnalysisConfig::Precision precision = AnalysisConfig::Precision::kFloat32,
       TRTInt8Calibrator* calibrator = nullptr, int device_id = 0,
-      const ShapeMapType min_input_shape = {},
-      const ShapeMapType max_input_shape = {},
-      const ShapeMapType optim_input_shape = {},
+      ShapeMapType min_input_shape = {},
+      ShapeMapType max_input_shape = {},
+      ShapeMapType optim_input_shape = {},
       bool disable_trt_plugin_fp16 = false,
       nvinfer1::ILogger& logger = NaiveLogger::Global())
       : max_batch_(max_batch),
@@ -282,9 +282,10 @@ class TensorRTEngine {
   //   return infer_context_[tid].get();
   // }
   nvinfer1::IExecutionContext* context(int engine_op_index) {
-    VLOG(6) << "TensorRTEngine create context---";
+    VLOG(4) << "TensorRTEngine create context---";
     std::unique_lock<std::mutex> lock(mutex_);
     const std::thread::id tid = std::this_thread::get_id();
+    if (infer_context_.size() < engine_op_num_) infer_context_.resize(engine_op_num_);
     std::unordered_map<std::thread::id, infer_ptr<nvinfer1::IExecutionContext>>&
         infer_context = infer_context_[engine_op_index];
     if (infer_context.find(tid) == infer_context.end()) {
@@ -297,14 +298,16 @@ class TensorRTEngine {
       // It's ok. We will set it later.
       infer_context[tid].reset(infer_engine_->createExecutionContext());
       if (with_dynamic_shape_) {
-        VLOG(6) << "cur_profile_num_: " << cur_profile_num_;
-        // need new profile if it's not the first
-        if (cur_profile_num_ > 0) {
-          infer_context[tid]->setOptimizationProfile(
-              engine_op_index * max_profile_num_ + cur_profile_num_);
+        if (cur_profile_nums_.size() < engine_op_num_) {
+          cur_profile_nums_.resize(engine_op_num_);
+          for (auto &x : cur_profile_nums_) x = 0;
         }
-        profile_index_[tid] = cur_profile_num_;
-        ++cur_profile_num_;
+        VLOG(4) << "cur_profile_num_: " << cur_profile_nums_[engine_op_index];
+        // need new profile if it's not the first
+        infer_context[tid]->setOptimizationProfile(
+            engine_op_index * max_profile_num_ + cur_profile_nums_[engine_op_index]);
+        profile_index_[tid] = engine_op_index * max_profile_num_ + cur_profile_nums_[engine_op_index];
+        ++cur_profile_nums_[engine_op_index];
       }
     }
     return infer_context[tid].get();
@@ -334,10 +337,11 @@ class TensorRTEngine {
         infer_engine_,
         platform::errors::InvalidArgument(
             "You should build engine first and then set the context."));
-    for (int i = 0; i < engine_op_num_; ++i) {
-      infer_context_[i][tid].reset(nullptr);
-      infer_context_[i].erase(tid);
-    }
+    infer_context_.clear();
+    // for (int i = 0; i < engine_op_num_; ++i) {
+    //   infer_context_[i][tid].reset(nullptr);
+    //   infer_context_[i].erase(tid);
+    // }
   }
 
   nvinfer1::IHostMemory* Serialize() {
@@ -533,13 +537,16 @@ class TensorRTEngine {
   For create dynamic input when ConvertBlockToTRTEngine
   */
   int engine_op_num() { return engine_op_num_; }
-  void AddEngineOp(ShapeMapType& new_min_input_shape,
-                   ShapeMapType& new_max_input_shape,
-                   ShapeMapType& new_optim_input_shape) {
+  void AddEngineOp(ShapeMapType new_min_input_shape,
+                   ShapeMapType new_max_input_shape,
+                   ShapeMapType new_optim_input_shape) {
     // Add dynamic shapes
     VLOG(1) << "START push_back";
     min_input_shapes_.push_back(new_min_input_shape);
     max_input_shapes_.push_back(new_max_input_shape);
+    for (auto beg = new_max_input_shape.begin(); beg != new_max_input_shape.end(); ++beg) {
+      VLOG(1) << beg->first;
+    }
     optim_input_shapes_.push_back(new_optim_input_shape);
 
     VLOG(1) << "START INSERT";
@@ -702,6 +709,7 @@ class TensorRTEngine {
   int device_id_;
   int max_profile_num_{1};
   int cur_profile_num_{0};
+  std::vector<int> cur_profile_nums_;
 
   // Update@wufeisheng()2022.6.10: a count number for engine ops
   int engine_op_num_{1};

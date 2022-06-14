@@ -492,7 +492,7 @@ void TensorRtSubgraphPass::CreateTensorRTOp(
          graph->Has(framework::ir::kMultiheadMatmulPass)));
   }
   // Set engine_op_index for current engine op
-  op_desc->SetAttr("engine_op_index", trt_engine->engine_op_num());
+  op_desc->SetAttr("engine_op_index", trt_engine->engine_op_num()-1);
   op_desc->Flush();
 
   // if (use_static_engine) {

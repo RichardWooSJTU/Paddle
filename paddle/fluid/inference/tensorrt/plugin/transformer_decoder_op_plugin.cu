@@ -1050,7 +1050,7 @@ int TransformerDecoderPluginDynamic<T>::enqueue(
   auto input_type = input_desc[0].type;
   VLOG(3) << "step3";
   int bsz = input_dims.d[1];
-  if (bsz == 0) cudaGetLastError() != cudaSuccess;
+  if (bsz == 0) return cudaGetLastError() != cudaSuccess;
   VLOG(3) << "step4";
   int max_seq_len = input_desc[2].dims.d[2];  // debugggg
   VLOG(3) << "TransformerDecoderPluginDynamic::enqueue ----- ";

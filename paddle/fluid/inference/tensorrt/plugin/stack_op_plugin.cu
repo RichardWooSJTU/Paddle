@@ -164,9 +164,10 @@ int StackPluginDynamic::enqueue(const nvinfer1::PluginTensorDesc* input_desc,
 
   int lead_unit = 1;
   for (int i = 0; i < axis_; ++i) {
-    PADDLE_ENFORCE_GT(out_dims.d[i], 0,
-                      platform::errors::InvalidArgument(
-                          "Input dimensions should be greater than 0"));
+    // PADDLE_ENFORCE_GT(out_dims.d[i], 0,
+    //                   platform::errors::InvalidArgument(
+    //                       "Input dimensions should be greater than 0"));
+    if (out_dims.d[i] == 0) return cudaGetLastError() != cudaSuccess;
     lead_unit *= out_dims.d[i];
   }
 

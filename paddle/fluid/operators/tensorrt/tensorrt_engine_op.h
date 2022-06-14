@@ -126,18 +126,25 @@ static void RuntimeDynamicShapeCheck(
     }
     return true;
   };
+  VLOG(1) << "RuntimeDynamicShapeCheck";
   auto comma_fold = [](std::string a, int b) {
     return std::move(a) + ", " + std::to_string(b);
   };
+  VLOG(1) << runtime_input_shape.size();
   std::string runtime_input_shape_str = std::accumulate(
       std::next(runtime_input_shape.begin()), runtime_input_shape.end(),
       std::to_string(runtime_input_shape[0]), comma_fold);
+  VLOG(1) << runtime_input_shape_str;
+  VLOG(1) << min_input_shape.size();
   std::string min_input_shape_str =
       std::accumulate(std::next(min_input_shape.begin()), min_input_shape.end(),
                       std::to_string(min_input_shape[0]), comma_fold);
+  VLOG(1) << min_input_shape_str;
+  VLOG(1) << max_input_shape.size();
   std::string max_input_shape_str =
       std::accumulate(std::next(max_input_shape.begin()), max_input_shape.end(),
                       std::to_string(max_input_shape[0]), comma_fold);
+  VLOG(1) << "max_input_shape_str " << max_input_shape_str;
   PADDLE_ENFORCE_EQ(is_input_shape_valid(runtime_input_shape, min_input_shape,
                                          max_input_shape),
                     true,
@@ -337,15 +344,24 @@ class TensorRTEngineOp : public framework::OperatorBase {
         VLOG(4) << "trt engine runtime input name(" << name << "), dims("
                 << t.dims() << ")";
         auto t_shape = phi::vectorize<int32_t>(t.dims());
+        VLOG(4) << t_shape.size();
+        if (t_shape.size() == 0) {
+          VLOG(4) << "Holy shit!";
+        }
         runtime_input_shape.insert(std::make_pair(name, t_shape));
+        VLOG(4) << "finish trt engine runtime input name(" << name << "), dims("
+                << t.dims() << ")";
       }
 
       if (!allow_build_at_runtime_) {
+        VLOG(4) << "disallow allow_build_at_runtime_";
         std::map<std::string, std::vector<int>> min_input_shape =
             trt_engine->min_input_shape();
         std::map<std::string, std::vector<int>> max_input_shape =
             trt_engine->max_input_shape();
-        for (auto &x : runtime_input_names_) {
+        for (auto x : runtime_input_names_) {
+          auto name = x.substr(0, x.size() - 2);  // TODO: 超过10个engine就不对了
+          VLOG(1) << "x " << x;
           PADDLE_ENFORCE_EQ(
               min_input_shape.count(x), true,
               platform::errors::InvalidArgument(
@@ -354,10 +370,11 @@ class TensorRTEngineOp : public framework::OperatorBase {
               max_input_shape.count(x), true,
               platform::errors::InvalidArgument(
                   "Input %s not found in TRT engine max_input_shape.", x));
-          RuntimeDynamicShapeCheck(x, runtime_input_shape[x],
+          RuntimeDynamicShapeCheck(x, runtime_input_shape[name],
                                    min_input_shape[x], max_input_shape[x]);
         }
       } else {
+        VLOG(4) << "allow_build_at_runtime_";
         // compare runtime_input_shape and trt_engine dynamic shapes.
         std::vector<std::string> shape_changed_name;
         bool is_adjusted = trt_engine->AdjustDynamicShapeRange(
@@ -477,7 +494,8 @@ class TensorRTEngineOp : public framework::OperatorBase {
     //  std::vector<void *> buffers(num_bindings);
     // This method returns the total over all profiles.
     const int num_bindings = engine->GetNbBindings();
-    std::vector<void *> buffers(num_bindings, nullptr);
+    std::vector<void *> buffers(num_bindings);
+    VLOG(1) << "num_bindings is " << num_bindings;
 
     int binding_offset = 0;
     nvinfer1::IExecutionContext *trt_context = nullptr;
@@ -486,31 +504,35 @@ class TensorRTEngineOp : public framework::OperatorBase {
       trt_context = engine->context(engine_op_index_);
       binding_offset = engine->GetBindingsOffset(engine_op_index_);
     }
+    VLOG(1) << "binding_offset " << binding_offset;
     std::map<std::string, std::vector<int>> max_input_shape =
         engine->max_input_shape();
 
     // Set other engine op input as 0
-    for (int i = 0; i < engine->engine_op_num(); i++) {
-      if (i == engine_op_index_) continue;
-      const std::map<std::string, std::vector<int>> &current_max_input_shape =
-          engine->max_input_shapes()[i];
-      for (const auto &input : current_max_input_shape) {
-        const int bind_index =
-            engine->engine()->getBindingIndex(input.first.c_str()) +
-            binding_offset;
-        std::vector<int> zero_dimension{0, 0};
-        trt_context->setBindingDimensions(
-            bind_index, inference::tensorrt::Vec2TRT_Dims(
-                            zero_dimension, input.first.c_str(), true));
-      }
+
+    for (const auto &input : engine->max_input_shape()) {
+      VLOG(1) << "input " << input.first;
+      int bind_index =
+          engine->engine()->getBindingIndex(input.first.c_str());
+      if (bind_index == -1) continue;
+      bind_index += binding_offset;
+      VLOG(1) << "input " << input.first << " has bind_index " << bind_index;
+      std::vector<int> zero_dimension{0};
+      for (int j = 1; j < input.second.size(); ++j) zero_dimension.push_back(input.second[j]);
+      //this op's input also will be set to 0, but setBindingDimensions can be overwrote
+      trt_context->setBindingDimensions(
+          bind_index, inference::tensorrt::Vec2TRT_Dims(
+                          zero_dimension, input.first.c_str(), true));
     }
+    
 
     for (const auto &name : runtime_input_names_) {
       // convert input and copy to TRT engine's buffer
       auto x = name.substr(0, name.size() - 2);  // TODO: 超过10个engine就不对了
       auto &t =
           inference::analysis::GetFromScope<framework::LoDTensor>(scope, x);
-
+      VLOG(4) << "input tensor(" << name << "), dims("
+                << t.dims() << ")";
       // check the input_tensor
       if (!platform::is_gpu_place(t.place())) {
         VLOG(3) << "Set input location as host, input: " << x;
@@ -528,7 +550,7 @@ class TensorRTEngineOp : public framework::OperatorBase {
       // const int bind_index = engine->engine()->getBindingIndex(x.c_str());
       // Get index of profile 0 first, then plus binding offset
       const int bind_index =
-          engine->engine()->getBindingIndex(x.c_str()) + binding_offset;
+          engine->engine()->getBindingIndex(name.c_str()) + binding_offset;
       PADDLE_ENFORCE_LT(
           bind_index, num_bindings,
           platform::errors::InvalidArgument(
@@ -593,10 +615,10 @@ class TensorRTEngineOp : public framework::OperatorBase {
           }
           trt_context->setBindingDimensions(
               bind_index,
-              inference::tensorrt::Vec2TRT_Dims(max_input_shape[x], x, true));
+              inference::tensorrt::Vec2TRT_Dims(max_input_shape[name], name, true));
         } else {
           trt_context->setBindingDimensions(
-              bind_index, inference::tensorrt::Vec2TRT_Dims(t_shape, x, true));
+              bind_index, inference::tensorrt::Vec2TRT_Dims(t_shape, name, true));
         }
 #endif
       }

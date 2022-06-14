@@ -57,7 +57,8 @@ void TensorRTEngine::Execute(int batch_size, std::vector<void *> *buffers,
     infer_context->enqueue(batch_size, buffers->data(), stream, nullptr);
   } else {
 #if IS_TRT_VERSION_GE(6000)
-    infer_context->enqueueV2(buffers->data(), stream, nullptr);
+    // infer_context->enqueueV2(buffers->data(), stream, nullptr);
+    infer_context->executeV2(buffers->data());
 #endif
   }
   SetRuntimeBatch(batch_size);
@@ -429,14 +430,16 @@ void TensorRTEngine::SetOptimizationProfileImpl(
           << " min: " << Vec2Str(input.second)
           << ", max: " << Vec2Str(all_max_input_shape_[input.first])
           << ", opt: " << Vec2Str(all_optim_input_shape_[input.first]);
-  std::vector<int> zero_dimension(input.second.size(), 0);
-  for (int i = 1; i < zero_dimension.size(); ++i) {
-    zero_dimension[i] = input.second[i];
+  std::vector<int> zero_min_dimension(input.second.size(), 0);
+  std::vector<int> zero_max_dimension(input.second.size(), 0);
+  for (int i = 1; i < zero_min_dimension.size(); ++i) {
+    zero_min_dimension[i] = input.second[i];
+    zero_max_dimension[i] = all_max_input_shape_[input.first][i];
   }
   if (!for_other_engine_op) {
     optim_profile->setDimensions(
         input.first.c_str(), nvinfer1::OptProfileSelector::kMIN,
-        Vec2TRT_Dims(zero_dimension, input.first, true));
+        Vec2TRT_Dims(zero_min_dimension, input.first, true));
     optim_profile->setDimensions(
         input.first.c_str(), nvinfer1::OptProfileSelector::kMAX,
         Vec2TRT_Dims(all_max_input_shape_[input.first], input.first, true));
@@ -446,13 +449,13 @@ void TensorRTEngine::SetOptimizationProfileImpl(
   } else {
     optim_profile->setDimensions(
         input.first.c_str(), nvinfer1::OptProfileSelector::kMIN,
-        Vec2TRT_Dims(zero_dimension, input.first, true));
+        Vec2TRT_Dims(zero_min_dimension, input.first, true));
     optim_profile->setDimensions(
         input.first.c_str(), nvinfer1::OptProfileSelector::kMAX,
-        Vec2TRT_Dims(zero_dimension, input.first, true));
+        Vec2TRT_Dims(zero_max_dimension, input.first, true));
     optim_profile->setDimensions(
         input.first.c_str(), nvinfer1::OptProfileSelector::kOPT,
-        Vec2TRT_Dims(zero_dimension, input.first, true));
+        Vec2TRT_Dims(zero_max_dimension, input.first, true));
   }
 }
 
