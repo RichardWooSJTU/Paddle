@@ -518,7 +518,8 @@ void Executor::RunPartialPreparedContext(ExecutorPrepareContext* ctx,
     auto& op = ctx->ops_[i];
     op->Run(*local_scope, place_);
     if (gc) {
-      DeleteUnusedTensors(*local_scope, op.get(), ctx->unused_vars_, gc.get());
+      //TODO: The reason why normal input be deleted should be found and gc should be recovered
+      // DeleteUnusedTensors(*local_scope, op.get(), ctx->unused_vars_, gc.get());
     }
   }
 
