@@ -373,6 +373,8 @@ class MultiheadMatMulOpConverter : public OpConverter {
 
         if (engine_->precision() == AnalysisConfig::Precision::kInt8) {
           with_fp16 = true;
+          fc_layer->setPrecision(nvinfer1::DataType::kINT8);
+          fc_layer->setOutputType(0, nvinfer1::DataType::kINT8);
         }
         int head_size = hidden_out / head_number;
 

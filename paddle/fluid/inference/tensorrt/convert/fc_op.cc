@@ -172,6 +172,9 @@ class FcOpConverter : public OpConverter {
             ("fc_op_int8_conv1x1: Convolution (Output: " + output_name + ")")
                 .c_str());
         engine_->SetTensorDynamicRange(fc_layer_int8->getOutput(0), out_scale);
+
+        fc_layer_int8->setPrecision(nvinfer1::DataType::kINT8);
+        // fc_layer_int8->setOutputType(0, nvinfer1::DataType::kINT8);
         auto* fc_after_reshape_int8 = reshape_after_fc(
             fc_layer_int8->getOutput(0), x_dim, x_num_col_dims);
         if (activation_type == "relu") {

@@ -255,12 +255,18 @@ void TensorRtSubgraphPass::CreateTensorRTOp(
     if (std::count(graph_params.begin(), graph_params.end(), x->Name()) > 0) {
       params.push_back(x->Name());
     }
-    if (std::count(graph_params.begin(), graph_params.end(), x->Name()) >
-        0 /*&&
-        x->outputs.size() <= 1*/) {  // debuggggggg
-      params_not_shared.push_back(x->Name());
-    }
+    // if (std::count(graph_params.begin(), graph_params.end(), x->Name()) >
+    //     0 /*&&
+    //     x->outputs.size() <= 1*/) {  // debuggggggg
+    //   params_not_shared.push_back(x->Name());
+    // }
   }
+  for (auto para_name : graph_params) {
+    params_not_shared.push_back(para_name);
+    std::cout << para_name << std::endl;
+  }
+
+
   VLOG(1) << "finish input_names insert";
   std::set<std::string> output_names;
   std::set<std::string> output_names_with_id;
@@ -364,6 +370,7 @@ void TensorRtSubgraphPass::CreateTensorRTOp(
   op_desc->SetAttr("parameters", params);
   op_desc->SetAttr("allow_build_at_runtime", allow_build_at_runtime);
   op_desc->SetAttr("shape_range_info_path", shape_range_info_path);
+  //TODO use_inspector cannot get true
   op_desc->SetAttr("use_inspector", Get<bool>("use_inspector"));
 
   // we record all inputs' shapes in attr to check if they are consistent

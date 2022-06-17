@@ -98,7 +98,7 @@ class NaiveLogger : public nvinfer1::ILogger {
            const char* msg) TRT_NOEXCEPT override {
     switch (severity) {
       case Severity::kVERBOSE:
-        VLOG(3) << msg;
+        LOG(INFO) << msg;
         break;
       case Severity::kINFO:
         VLOG(2) << msg;

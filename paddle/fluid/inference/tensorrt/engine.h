@@ -35,6 +35,8 @@ limitations under the License. */
 #include "paddle/fluid/platform/enforce.h"
 #include "paddle/utils/any.h"
 
+void CudaMemInfo(std::string name);
+
 namespace paddle {
 namespace inference {
 namespace tensorrt {
@@ -281,14 +283,15 @@ class TensorRTEngine {
   //   }
   //   return infer_context_[tid].get();
   // }
-  nvinfer1::IExecutionContext* context(int engine_op_index) {
+  nvinfer1::IExecutionContext* context() {
     VLOG(4) << "TensorRTEngine create context---";
     std::unique_lock<std::mutex> lock(mutex_);
     const std::thread::id tid = std::this_thread::get_id();
-    if (infer_context_.size() < engine_op_num_) infer_context_.resize(engine_op_num_);
-    std::unordered_map<std::thread::id, infer_ptr<nvinfer1::IExecutionContext>>&
-        infer_context = infer_context_[engine_op_index];
-    if (infer_context.find(tid) == infer_context.end()) {
+    // if (infer_context_.size() < engine_op_num_) infer_context_.resize(engine_op_num_);
+    // std::unordered_map<std::thread::id, infer_ptr<nvinfer1::IExecutionContext>>&
+    //     infer_context = infer_context_[engine_op_index];
+    // VLOG(1) << "infer_context create for op index " << engine_op_index;
+    if (infer_context_.find(tid) == infer_context_.end()) {
       PADDLE_ENFORCE_NOT_NULL(
           infer_engine_,
           platform::errors::InvalidArgument(
@@ -296,36 +299,37 @@ class TensorRTEngine {
       // We may see trt warning: Profile 0 has been chosen by another
       // IExecutionContext...
       // It's ok. We will set it later.
-      infer_context[tid].reset(infer_engine_->createExecutionContext());
+      CudaMemInfo("Before create context");
+      infer_context_[tid].reset(infer_engine_->createExecutionContext());
+      CudaMemInfo("After create context");
       if (with_dynamic_shape_) {
-        if (cur_profile_nums_.size() < engine_op_num_) {
-          cur_profile_nums_.resize(engine_op_num_);
-          for (auto &x : cur_profile_nums_) x = 0;
-        }
-        VLOG(4) << "cur_profile_num_: " << cur_profile_nums_[engine_op_index];
+        // if (cur_profile_nums_.size() < engine_op_num_) {
+        //   cur_profile_nums_.resize(engine_op_num_);
+        //   for (auto &x : cur_profile_nums_) x = 0;
+        // }
+        // VLOG(4) << "cur_profile_num_: " << cur_profile_nums_[engine_op_index];
         // need new profile if it's not the first
-        infer_context[tid]->setOptimizationProfile(
-            engine_op_index * max_profile_num_ + cur_profile_nums_[engine_op_index]);
-        profile_index_[tid] = engine_op_index * max_profile_num_ + cur_profile_nums_[engine_op_index];
-        ++cur_profile_nums_[engine_op_index];
+        infer_context_[tid]->setOptimizationProfile(cur_profile_num_);
+            // engine_op_index * max_profile_num_ + cur_profile_nums_[engine_op_index]);
+        profile_index_[tid] = cur_profile_num_;
+        ++cur_profile_num_;
       }
     }
-    return infer_context[tid].get();
+    
+    return infer_context_[tid].get();
   }
 
-  int GetProfileIndex(int engine_op_index) {
+  int GetProfileIndex() {
     if (max_profile_num_ > 1) {
       std::unique_lock<std::mutex> lock(mutex_);
       const std::thread::id tid = std::this_thread::get_id();
-      return engine_op_index * engine_op_num_ + profile_index_[tid];
-    } else {
-      return engine_op_index;
+      return profile_index_[tid];
     }
   }
 
-  int GetBindingsOffset(int engine_op_index) {
+  int GetBindingsOffset() {
     return (binding_num_ / (engine_op_num_ * max_profile_num_)) *
-           GetProfileIndex(engine_op_index);
+           GetProfileIndex();
   }
 
   int GetNbBindings() { return binding_num_; }
@@ -337,10 +341,10 @@ class TensorRTEngine {
         infer_engine_,
         platform::errors::InvalidArgument(
             "You should build engine first and then set the context."));
-    infer_context_.clear();
+    // infer_context_.clear();
     // for (int i = 0; i < engine_op_num_; ++i) {
-    //   infer_context_[i][tid].reset(nullptr);
-    //   infer_context_[i].erase(tid);
+      infer_context_[tid].reset(nullptr);
+      infer_context_.erase(tid);
     // }
   }
 
@@ -562,18 +566,18 @@ class TensorRTEngine {
 
     // Create optim profile. Dynamic shapes of each profile will be set when
     // build engine in freeze network
-    VLOG(1) << "engine_op_num_ " << engine_op_num_;
-    VLOG(1) << "optim_profiles_ size  " << optim_profiles_.size();
-    optim_profiles_.resize(engine_op_num_);
-    VLOG(1) << "optim_profiles_ size after resize " << optim_profiles_.size();
-    VLOG(1) << "optim_profiles_[i] size "
-            << optim_profiles_[engine_op_num_ - 1].size();
-    optim_profiles_[engine_op_num_ - 1].resize(max_profile_num_);
-    VLOG(1) << "optim_profiles_[i] size after resize "
-            << optim_profiles_[engine_op_num_ - 1].size();
-    for (int i = 0; i < max_profile_num_; i++)
-      optim_profiles_[engine_op_num_ - 1][i] =
-          infer_builder_->createOptimizationProfile();
+    // VLOG(1) << "engine_op_num_ " << engine_op_num_;
+    // VLOG(1) << "optim_profiles_ size  " << optim_profiles_.size();
+    // optim_profiles_.resize(engine_op_num_);
+    // VLOG(1) << "optim_profiles_ size after resize " << optim_profiles_.size();
+    // VLOG(1) << "optim_profiles_[i] size "
+    //         << optim_profiles_[engine_op_num_ - 1].size();
+    // optim_profiles_[engine_op_num_ - 1].resize(max_profile_num_);
+    // VLOG(1) << "optim_profiles_[i] size after resize "
+    //         << optim_profiles_[engine_op_num_ - 1].size();
+    // for (int i = 0; i < max_profile_num_; i++)
+    //   optim_profiles_[engine_op_num_ - 1][i] =
+    //       infer_builder_->createOptimizationProfile();
   }
 
   bool use_oss() { return use_oss_; }
@@ -691,8 +695,8 @@ class TensorRTEngine {
   */
   void SetOptimizationProfileImpl(
       const std::pair<std::string, std::vector<int>>& input,
-      nvinfer1::IOptimizationProfile* optim_profile, bool for_other_engine_op);
-  void SetOptimizationProfile(int engine_op_index);
+      nvinfer1::IOptimizationProfile* optim_profile);
+  void SetOptimizationProfile();
 
   // the max batch size
   int max_batch_;
@@ -709,7 +713,7 @@ class TensorRTEngine {
   int device_id_;
   int max_profile_num_{1};
   int cur_profile_num_{0};
-  std::vector<int> cur_profile_nums_;
+  // std::vector<int> cur_profile_nums_;
 
   // Update@wufeisheng()2022.6.10: a count number for engine ops
   int engine_op_num_{1};
@@ -745,8 +749,9 @@ class TensorRTEngine {
   infer_ptr<nvinfer1::IBuilder> infer_builder_;
   infer_ptr<nvinfer1::INetworkDefinition> infer_network_;
   infer_ptr<nvinfer1::ICudaEngine> infer_engine_;
-  std::vector<std::unordered_map<std::thread::id,
-                                 infer_ptr<nvinfer1::IExecutionContext>>>
+  // std::vector<std::unordered_map<std::thread::id,
+  //                                infer_ptr<nvinfer1::IExecutionContext>>>
+  std::unordered_map<std::thread::id,infer_ptr<nvinfer1::IExecutionContext>>
       infer_context_;
   infer_ptr<nvinfer1::IHostMemory> ihost_memory_;
   std::unordered_map<nvinfer1::ITensor*, float> quant_dynamic_range_;
@@ -754,7 +759,8 @@ class TensorRTEngine {
 #if IS_TRT_VERSION_GE(6000)
   int binding_num_;
   infer_ptr<nvinfer1::IBuilderConfig> infer_builder_config_;
-  std::vector<std::vector<nvinfer1::IOptimizationProfile*>> optim_profiles_;
+  // std::vector<std::vector<nvinfer1::IOptimizationProfile*>> optim_profiles_;
+  std::vector<nvinfer1::IOptimizationProfile*> optim_profile_;
   std::vector<std::unique_ptr<plugin::DynamicPluginTensorRT>> owned_pluginv2_;
 #endif
   std::mutex mutex_;

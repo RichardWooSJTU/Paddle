@@ -17,11 +17,19 @@ limitations under the License. */
 #include <NvInfer.h>
 #include <glog/logging.h>
 #include <string>
+#include <fstream>
 
 #include "cuda_runtime_api.h"  // NOLINT
 #include "paddle/fluid/inference/tensorrt/helper.h"
 #include "paddle/fluid/platform/device/gpu/gpu_info.h"
 #include "paddle/fluid/platform/enforce.h"
+
+void CudaMemInfo(std::string name) {
+  size_t avail;
+  size_t total;
+  cudaMemGetInfo(&avail, &total);
+  VLOG(1) << name << " used: " << (total - avail)/1000000 << "MB; total: " << total/1000000 << "MB";
+}
 
 namespace paddle {
 namespace inference {
@@ -43,16 +51,17 @@ void TensorRTEngine::InitNetwork() {
 
   infer_builder_config_.reset(infer_builder_->createBuilderConfig());
   // optim_profile_ = infer_builder_->createOptimizationProfile();
-  optim_profiles_.resize(1);
-  optim_profiles_[0].resize(max_profile_num_);
+  // optim_profiles_.resize(1);
+  // optim_profiles_[0].resize(max_profile_num_);
+  optim_profile_.resize(max_profile_num_);
   for (int i = 0; i < max_profile_num_; i++)
-    optim_profiles_[0][i] = infer_builder_->createOptimizationProfile();
+    optim_profile_[i] = infer_builder_->createOptimizationProfile();
 }
 
 void TensorRTEngine::Execute(int batch_size, std::vector<void *> *buffers,
                              cudaStream_t stream, int engine_op_index) {
   freshDeviceId();
-  auto infer_context = context(engine_op_index);
+  auto infer_context = context();
   if (!with_dynamic_shape()) {
     infer_context->enqueue(batch_size, buffers->data(), stream, nullptr);
   } else {
@@ -94,6 +103,7 @@ void TensorRTEngine::FreezeNetwork() {
   if (enable_int8) {
     infer_builder_config_->setFlag(nvinfer1::BuilderFlag::kFP16);
     infer_builder_config_->setFlag(nvinfer1::BuilderFlag::kINT8);
+    // infer_builder_config_->setFlag(nvinfer1::BuilderFlag::kOBEY_PRECISION_CONSTRAINTS);
 
     if (calibrator_) {
       infer_builder_config_->setInt8Calibrator(calibrator_);
@@ -158,6 +168,10 @@ void TensorRTEngine::FreezeNetwork() {
         auto layer = network()->getLayer(i);
         if (!is_layer_int8(layer)) {
           layer->setPrecision(nvinfer1::DataType::kFLOAT);
+          std::string layer_name = std::string(layer->getName());
+          if (layer_name.find("preln_residual_bias") != std::string::npos) {
+            layer->setPrecision(nvinfer1::DataType::kHALF);
+          }
           ++layers_no_int8;
         }
       }
@@ -206,19 +220,17 @@ void TensorRTEngine::FreezeNetwork() {
   */
   if (with_dynamic_shape_) {
 #if IS_TRT_VERSION_GE(6000)
-    for (int i = 0; i < engine_op_num_; ++i) {
-      SetOptimizationProfile(i);
-    }
+    SetOptimizationProfile();
 #endif
   }
 
 #if IS_TRT_VERSION_GE(8200)
-  if (use_inspector_) {
+  // if (use_inspector_) {
     infer_builder_config_->setProfilingVerbosity(
         nvinfer1::ProfilingVerbosity::kDETAILED);
-  }
+  // }
 #endif
-
+CudaMemInfo("Before build engine");
 #if IS_TRT_VERSION_LT(8000)
   infer_engine_.reset(infer_builder_->buildEngineWithConfig(
       *network(), *infer_builder_config_));
@@ -230,7 +242,7 @@ void TensorRTEngine::FreezeNetwork() {
   infer_engine_.reset(runtime->deserializeCudaEngine(ihost_memory_->data(),
                                                      ihost_memory_->size()));
 #endif
-
+CudaMemInfo("After build engine");
   PADDLE_ENFORCE_NOT_NULL(
       infer_engine_, platform::errors::Fatal(
                          "Build TensorRT cuda engine failed! Please recheck "
@@ -387,7 +399,7 @@ void TensorRTEngine::GetEngineInfo() {
   LOG(INFO) << "====== engine info ======";
   std::unique_ptr<nvinfer1::IEngineInspector> infer_inspector(
       infer_engine_->createEngineInspector());
-  auto infer_context = context(0);
+  auto infer_context = context();
   infer_inspector->setExecutionContext(infer_context);
   LOG(INFO) << infer_inspector->getEngineInformation(
       nvinfer1::LayerInformationFormat::kONELINE);
@@ -402,11 +414,22 @@ void TensorRTEngine::GetEngineInfo(int engine_op_index) {
   LOG(INFO) << "====== engine info ======";
   std::unique_ptr<nvinfer1::IEngineInspector> infer_inspector(
       infer_engine_->createEngineInspector());
-  auto infer_context = context(engine_op_index);
+  auto infer_context = context();
   infer_inspector->setExecutionContext(infer_context);
-  LOG(INFO) << infer_inspector->getEngineInformation(
-      nvinfer1::LayerInformationFormat::kONELINE);
+  // LOG(INFO) << infer_inspector->getEngineInformation(
+  //     // nvinfer1::LayerInformationFormat::kONELINE);
+  //     nvinfer1::LayerInformationFormat.JSON);
+  //GLOG cannot print full information
+  //Firstly, try to write to files
+  std::ofstream out("engine_info.json", std::ios::out | std::ios::app);
+  if (out.is_open()) {
+    out << infer_inspector->getEngineInformation(
+      nvinfer1::LayerInformationFormat::kJSON);
+  }
+  out.close();
   LOG(INFO) << "====== engine info end ======";
+  
+
 #else
   LOG(INFO) << "Inspector needs TensorRT version 8.2 and after.";
 #endif
@@ -414,7 +437,7 @@ void TensorRTEngine::GetEngineInfo(int engine_op_index) {
 
 void TensorRTEngine::SetOptimizationProfileImpl(
     const std::pair<std::string, std::vector<int>> &input,
-    nvinfer1::IOptimizationProfile *optim_profile, bool for_other_engine_op) {
+    nvinfer1::IOptimizationProfile *optim_profile) {
 #if IS_TRT_VERSION_LT(7000)
   // trt6 will check all_of input > 0
   if (!(std::all_of(input.second.begin(), input.second.end(),
@@ -436,9 +459,9 @@ void TensorRTEngine::SetOptimizationProfileImpl(
   std::vector<int> zero_max_dimension(input.second.size(), 0);
   for (int i = 1; i < zero_min_dimension.size(); ++i) {
     zero_min_dimension[i] = input.second[i];
-    zero_max_dimension[i] = all_max_input_shape_[input.first][i];
+    // zero_max_dimension[i] = all_max_input_shape_[input.first][i];
   }
-  if (!for_other_engine_op) {
+
     optim_profile->setDimensions(
         input.first.c_str(), nvinfer1::OptProfileSelector::kMIN,
         Vec2TRT_Dims(zero_min_dimension, input.first, true));
@@ -448,38 +471,26 @@ void TensorRTEngine::SetOptimizationProfileImpl(
     optim_profile->setDimensions(
         input.first.c_str(), nvinfer1::OptProfileSelector::kOPT,
         Vec2TRT_Dims(all_optim_input_shape_[input.first], input.first, true));
-  } else {
-    optim_profile->setDimensions(
-        input.first.c_str(), nvinfer1::OptProfileSelector::kMIN,
-        Vec2TRT_Dims(zero_min_dimension, input.first, true));
-    optim_profile->setDimensions(
-        input.first.c_str(), nvinfer1::OptProfileSelector::kMAX,
-        Vec2TRT_Dims(zero_max_dimension, input.first, true));
-    optim_profile->setDimensions(
-        input.first.c_str(), nvinfer1::OptProfileSelector::kOPT,
-        Vec2TRT_Dims(zero_max_dimension, input.first, true));
-  }
 }
 
-void TensorRTEngine::SetOptimizationProfile(int engine_op_index) {
+void TensorRTEngine::SetOptimizationProfile() {
   LOG(INFO) << "Run Paddle-TRT Dynamic Shape mode.";
   for (int i = 0; i < max_profile_num_; i++) {
-    for (int j = 0; j < engine_op_num_; j++) {
-      for (auto &input : min_input_shapes_[j]) {
-        if (j == engine_op_index) {
-          // For current engine op, the corresponding optim profile will be set
-          // here
-          SetOptimizationProfileImpl(input, optim_profiles_[engine_op_index][i],
-                                     false);
-        } else {
-          // For other op's input shape, 0 will be set.
-          SetOptimizationProfileImpl(input, optim_profiles_[engine_op_index][i],
-                                     true);
-        }
-      }
+    for (auto &input : all_min_input_shape_) {
+      // if (j == engine_op_index) {
+      //   // For current engine op, the corresponding optim profile will be set
+      //   // here
+      //   SetOptimizationProfileImpl(input, optim_profiles_[engine_op_index][i],
+      //                               false);
+      // } else {
+      //   // For other op's input shape, 0 will be set.
+      //   SetOptimizationProfileImpl(input, optim_profiles_[engine_op_index][i],
+      //                               true);
+      // }
+      SetOptimizationProfileImpl(input, optim_profile_[i]);
     }
     infer_builder_config_->addOptimizationProfile(
-        optim_profiles_[engine_op_index][i]);
+        optim_profile_[i]);
   }
   if (WithFp16() && disable_trt_plugin_fp16()) {
     LOG(INFO) << "NOTE: In order to achieve higher accuracy, you have "

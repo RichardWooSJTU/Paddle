@@ -153,6 +153,7 @@ class TransformerDecoderOpConverter : public OpConverter {
 
         if (engine_->precision() == AnalysisConfig::Precision::kInt8) {
           with_fp16 = true;
+          fc_layer->setPrecision(nvinfer1::DataType::kINT8);
         }
 
         // no need to add shuffle after fc, just change it in

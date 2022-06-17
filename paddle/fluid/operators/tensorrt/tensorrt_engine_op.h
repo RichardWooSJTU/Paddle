@@ -284,6 +284,7 @@ class TensorRTEngineOp : public framework::OperatorBase {
       if (nullptr == infer_engine) {
         trt_engine_->FreezeNetwork();
         trt_engine_->ClearWeights();
+        trt_engine_->GetEngineInfo(engine_op_index_);
       }
     }
     precision_mode_ = AnalysisConfig::Precision::kFloat32;
@@ -331,9 +332,9 @@ class TensorRTEngineOp : public framework::OperatorBase {
       return;
     }
     auto *trt_engine = GetEngine(scope, dev_place);
-    if (use_inspector_) {
-      trt_engine->GetEngineInfo(engine_op_index_);
-    }
+    // if (use_inspector_) {
+    //  trt_engine->GetEngineInfo(engine_op_index_);
+    // }
     if (trt_engine->with_dynamic_shape()) {
       // get runtime input shapes.
       std::map<std::string, std::vector<int32_t>> runtime_input_shape;
@@ -501,8 +502,8 @@ class TensorRTEngineOp : public framework::OperatorBase {
     nvinfer1::IExecutionContext *trt_context = nullptr;
     if (engine->with_dynamic_shape()) {
       // Initilize context and get offset by profile index
-      trt_context = engine->context(engine_op_index_);
-      binding_offset = engine->GetBindingsOffset(engine_op_index_);
+      trt_context = engine->context();
+      binding_offset = engine->GetBindingsOffset();
     }
     VLOG(1) << "binding_offset " << binding_offset;
     std::map<std::string, std::vector<int>> max_input_shape =
