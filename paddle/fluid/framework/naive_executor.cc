@@ -67,7 +67,7 @@ void NaiveExecutor::CreateVariables(const ProgramDesc &desc, int block_id,
   while (anc->parent()) {
     anc = anc->parent();
   }
-
+  VLOG(1) << "anc is " << anc;
   int num_vars = 0;
   for (auto &var : global_block.AllVars()) {
     if (var->Name() == framework::kEmptyVarName) {

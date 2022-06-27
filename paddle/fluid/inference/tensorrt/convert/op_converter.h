@@ -332,6 +332,7 @@ class OpConverter {
     size_t num_out = output_tensor_names.size();
     for (size_t i = 0; i < num_out; i++) {
       layer->getOutput(i)->setName(output_tensor_names[i].c_str());
+      VLOG(3) << "output_tensor_names " << i << " " << output_tensor_names[i];
       engine_->SetITensor(output_tensor_names[i], layer->getOutput(i));
       if (test_mode) {
         engine_->DeclareOutput(output_tensor_names[i]);

@@ -214,6 +214,7 @@ bool AnalysisPredictor::Init(
 bool AnalysisPredictor::PrepareScope(
     const std::shared_ptr<framework::Scope> &parent_scope) {
   if (parent_scope) {
+    VLOG(1) << "[predictor] parent_scope " << parent_scope;
     PADDLE_ENFORCE_NOT_NULL(
         parent_scope,
         platform::errors::PreconditionNotMet(
@@ -221,12 +222,14 @@ bool AnalysisPredictor::PrepareScope(
     scope_ = parent_scope;
     status_is_cloned_ = true;
   } else {
+    VLOG(1) << "[predictor] scope_ " << scope_;
     paddle::framework::InitDevices();
     // TODO(wilber): we need to release memory occupied by weights.
     scope_.reset(new paddle::framework::Scope());
     status_is_cloned_ = false;
   }
   sub_scope_ = &scope_->NewScope();
+  VLOG(1) << "[predictor] sub_scope_ " << sub_scope_;
   return true;
 }
 bool AnalysisPredictor::PrepareProgram(

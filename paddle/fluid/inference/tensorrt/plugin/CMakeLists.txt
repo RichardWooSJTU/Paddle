@@ -16,6 +16,7 @@ nv_library(tensorrt_plugin
            matmul_op_int8_plugin.cu
            c_allreduce_op_plugin.cu
            transformer_decoder_op_plugin.cu
+           fc_plugin.cu
 	   DEPS enforce tensorrt_engine prelu tensor bert_encoder_functor)
 
 nv_test(test_split_plugin SRCS test_split_plugin.cc DEPS

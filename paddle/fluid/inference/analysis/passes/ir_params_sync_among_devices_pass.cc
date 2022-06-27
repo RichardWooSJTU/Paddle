@@ -145,8 +145,10 @@ void IrParamsSyncAmongDevicesPass::CopyParamsToGpu(Argument *argument) {
     CudaMemInfo();
     if (std::count(repetitive_params.begin(), repetitive_params.end(),
                    var_name)) {
+      VLOG(3) << "var sss " << var_name;
       if (!reserve_cpu_weights) {
-        scope->EraseVars({var_name});
+        // scope->EraseVars({var_name});
+        VLOG(3) << "erase " << var_name;
       }
       continue;
     }

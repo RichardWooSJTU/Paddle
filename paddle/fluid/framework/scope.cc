@@ -43,7 +43,10 @@ PADDLE_DEFINE_EXPORTED_bool(
 namespace paddle {
 namespace framework {
 
-Scope::~Scope() { DropKids(); }
+Scope::~Scope() { 
+  VLOG(1) << "delete scope " << this;
+  DropKids(); 
+}
 
 Scope& Scope::NewScope() const {
   Scope* child = new Scope(this);
@@ -184,6 +187,7 @@ void Scope::EraseVars(const std::vector<std::string>& var_names) {
     SCOPE_VARS_WRITER_LOCK
     for (auto it = vars_.begin(); it != vars_.end();) {
       if (var_set.find(it->first) != var_set.end()) {
+        VLOG(1) << "erase var " << it->first;
         it = vars_.erase(it);
       } else {
         ++it;

@@ -306,6 +306,7 @@ class TensorRTEngineOp : public framework::OperatorBase {
   void RunImpl(const framework::Scope &scope,
                const platform::Place &dev_place) const override {
     //ProfilerStart("tensorrt_engine_op.perf");
+    VLOG(1) << "[DEBUG] runtime scope addr " << &scope;
     if (calibration_mode_ == true) {
       RunCalibration(scope, dev_place);
       return;
