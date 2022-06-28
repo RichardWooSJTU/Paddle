@@ -18,6 +18,7 @@
 #include <vector>
 #include <cuda.h>
 #include <cuda_runtime_api.h>
+#include "paddle/fluid/platform/dynload/cublasLt.h"
 
 #include "paddle/fluid/inference/tensorrt/engine.h"
 #include "paddle/fluid/inference/tensorrt/plugin/trt_plugin.h"
@@ -34,30 +35,37 @@ namespace plugin {
 #if IS_TRT_VERSION_GE(6000)
 class FcPluginDynamic : public DynamicPluginTensorRT {
  public:
-    explicit FcPluginDynamic(std::string weights_name, std::string bias_name, framework::Scope* scope, int dev_id);
-    FcPluginDynamic(std::string weights_name, std::string bias_name, framework::Scope* scope, int dev_id, int n, int k):
-      weights_name_(weights_name), bias_name_(bias_name), scope_(scope), dev_id_(dev_id), n_(n), k_(k){
+    explicit FcPluginDynamic(std::string weight_name, std::string bias_name, framework::Scope* scope, int dev_id);
+    FcPluginDynamic(std::string weight_name, std::string bias_name, framework::Scope* scope, int dev_id, int n, int k,
+                    cublasLtHandle_t handle, cublasLtMatrixLayout_t weight_transform_desc,
+                    cublasLtMatrixTransformDesc_t transform_desc):
+                    weight_name_(weight_name), bias_name_(bias_name), scope_(scope), dev_id_(dev_id), n_(n), k_(k), 
+                    handle_(handle), weight_transform_desc_(weight_transform_desc), 
+                    transform_desc_(transform_desc) {
         VLOG(1) << "[debug] clone constructor scope_ " <<  scope_;
       }
 
     FcPluginDynamic(void const* serial_data, size_t serial_length) {
       VLOG(1) << "[DEBUG] DeserializeValue";
-      const char* weights_name_str;
+      const char* weight_name_str;
       const char* bias_name_str;
-      DeserializeValue(&serial_data, &serial_length, &weights_name_str);
+      DeserializeValue(&serial_data, &serial_length, &weight_name_str);
       DeserializeValue(&serial_data, &serial_length, &bias_name_str);
       DeserializeValue(&serial_data, &serial_length, &scope_);
       DeserializeValue(&serial_data, &serial_length, &dev_id_);
-      DeserializeValue(&serial_data, &serial_length, &n_);
       DeserializeValue(&serial_data, &serial_length, &k_);
-      VLOG(1) << "[DEBUG] Deserialize weights_name_ "  << weights_name_;
-      VLOG(1) << "[DEBUG] Deserialize weights_name_str "  << std::string(weights_name_str);
-      weights_name_ = std::string(weights_name_str);
+      DeserializeValue(&serial_data, &serial_length, &n_);
+      DeserializeValue(&serial_data, &serial_length, &handle_);
+      DeserializeValue(&serial_data, &serial_length, &weight_transform_desc_);
+      DeserializeValue(&serial_data, &serial_length, &transform_desc_);
+      VLOG(1) << "[DEBUG] Deserialize weight_name_ "  << weight_name_;
+      VLOG(1) << "[DEBUG] Deserialize weight_name_str "  << std::string(weight_name_str);
+      weight_name_ = std::string(weight_name_str);
       bias_name_ = std::string(bias_name_str);
     }
     nvinfer1::IPluginV2DynamicExt* clone() const TRT_NOEXCEPT override {
         VLOG(1) << "[DEBUG] clone";
-        return new FcPluginDynamic(weights_name_, bias_name_, scope_, dev_id_, n_, k_);
+        return new FcPluginDynamic(weight_name_, bias_name_, scope_, dev_id_, n_, k_, handle_, weight_transform_desc_, transform_desc_);
     }
 
     const char* getPluginType() const TRT_NOEXCEPT override {
@@ -68,24 +76,31 @@ class FcPluginDynamic : public DynamicPluginTensorRT {
 
     size_t getSerializationSize() const TRT_NOEXCEPT override {
       VLOG(1) << "[DEBUG] getSerializationSize";
-      VLOG(1) << "[DEBUG] weights_name_ SerializationSize " << SerializedSize(weights_name_.c_str());
-        return SerializedSize(weights_name_.c_str()) + 
+      VLOG(1) << "[DEBUG] weight_name_ SerializationSize " << SerializedSize(weight_name_.c_str());
+        return SerializedSize(weight_name_.c_str()) + 
               SerializedSize(bias_name_.c_str()) + 
               SerializedSize(scope_) +
               SerializedSize(dev_id_) +
               SerializedSize(n_) +
-              SerializedSize(k_);
+              SerializedSize(k_) +
+              SerializedSize(handle_) +
+              SerializedSize(weight_transform_desc_) +
+              SerializedSize(transform_desc_);
         
     }
     void serialize(void* buffer) const TRT_NOEXCEPT override {
        VLOG(1) << "[DEBUG] serialize";
-       VLOG(1) << "[DEBUG] serialize weights_name_" << weights_name_;
-        SerializeValue(&buffer, weights_name_.c_str());
+       VLOG(1) << "[DEBUG] serialize weight_name_" << weight_name_;
+        SerializeValue(&buffer, weight_name_.c_str());
         SerializeValue(&buffer, bias_name_.c_str());
         SerializeValue(&buffer, scope_);
         SerializeValue(&buffer, dev_id_);
         SerializeValue(&buffer, k_);
-        SerializeValue(&buffer, n_);        
+        SerializeValue(&buffer, n_); 
+        SerializeValue(&buffer, handle_); 
+        SerializeValue(&buffer, weight_transform_desc_); 
+        SerializeValue(&buffer, transform_desc_); 
+
     }
 
     nvinfer1::DimsExprs getOutputDimensions(
@@ -120,12 +135,18 @@ class FcPluginDynamic : public DynamicPluginTensorRT {
     void destroy() TRT_NOEXCEPT override { delete this; }
 
  private:
-    std::string weights_name_;
+    std::string weight_name_;
     std::string bias_name_;
     framework::Scope* scope_;
     int dev_id_;
     int k_;
     int n_;
+    int m_;
+
+    //cublasLt
+    cublasLtHandle_t handle_;
+    cublasLtMatrixLayout_t weight_transform_desc_;
+    cublasLtMatrixTransformDesc_t transform_desc_;
 };
 
 class FcPluginDynamicCreator : public TensorRTPluginCreator {

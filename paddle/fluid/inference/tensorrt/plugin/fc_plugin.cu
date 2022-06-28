@@ -14,51 +14,101 @@
 
 #include "paddle/fluid/inference/tensorrt/plugin/fc_plugin.h"
 
+namespace dyl = paddle::platform::dynload;
+
 namespace paddle {
 namespace inference {
 namespace tensorrt {
 namespace plugin {
 
-FcPluginDynamic::FcPluginDynamic(std::string weights_name, std::string bias_name, framework::Scope* scope, int dev_id)
-    : weights_name_(weights_name), bias_name_(bias_name), scope_(scope), dev_id_(dev_id), k_(0), n_(0) {
+FcPluginDynamic::FcPluginDynamic(std::string weight_name, std::string bias_name, framework::Scope* scope, int dev_id)
+    : weight_name_(weight_name), bias_name_(bias_name), scope_(scope), dev_id_(dev_id) {
         VLOG(1) << "[DEBUG] FcPluginDynamic";
         VLOG(1) << "[DEBUG] buildtime scope addr " << scope;
-        VLOG(1) << "[debug] scope has kid " << scope_->kids().size();
+        std::string gpu_suffix = "_gpu_for_fc";
+        std::string weight_name_gpu = weight_name + gpu_suffix;
+        weight_name_ = weight_name_gpu;
+        framework::Variable* Y_v_gpu = scope_->FindVar(weight_name_gpu);
+        framework::LoDTensor* Y_t_gpu;
+        if (Y_v_gpu == nullptr) {
+            auto* Y_v = scope_->FindVar(weight_name); // auto == Variable
+            auto* Y_t = Y_v->GetMutable<framework::LoDTensor>();
+            auto dims = Y_t->dims();
+            k_ = dims[0];
+            VLOG(1) << "[DEBUG] k_ " << k_;
+            n_ = dims[1];
+            VLOG(1) << "[DEBUG] n_ " << n_;
 
-        auto* Y_v = scope_->FindVar(weights_name_); // auto == Variable
-        auto* Y_t = Y_v->GetMutable<framework::LoDTensor>();
-        auto dims = Y_t->dims();
-        k_ = dims[0];
-        VLOG(1) << "[DEBUG] k_ " << k_;
-        n_ = dims[1];
-        VLOG(1) << "[DEBUG] n_ " << n_;
+            VLOG(1) << "weight tensor type: " << Y_t->name();
+            VLOG(1) << "weight tensor element num: " << Y_t->numel();
+            VLOG(1) << "weight tensor dims" << Y_t->dims();
 
-        VLOG(1) << "weights tensor type: " << Y_t->name();
-        VLOG(1) << "weights tensor element num: " << Y_t->numel();
-        VLOG(1) << "weights tensor dims" << Y_t->dims();
+            VLOG(1) << "weight tensor dtype" << Y_t->dtype();
+            VLOG(1) << "weight tensor layout"<< Y_t->layout();
 
-        VLOG(1) << "weights tensor dtype" << Y_t->dtype();
-        VLOG(1) << "weights tensor layout"<< Y_t->layout();
+            //quant weight
+            float* old_weight_data = Y_t->data<float>();
+            float weight_max = 0.0f;
+            for (int i =0; i < Y_t->numel(); ++i) {
+                if (old_weight_data[i] > weight_max) {
+                    weight_max = old_weight_data[i];
+                }
+            }
+            VLOG(1) << "begin quant ";
+            framework::LoDTensor scale_tensor;
+            scale_tensor.Resize(dims);
+            int8_t* temp_weight_data = scale_tensor.mutable_data<int8_t>(platform::CPUPlace());
+            float weight_scale = weight_max / 127.0;
+            VLOG(1) << "weights scale " << weight_scale;
+            auto round_scale = [](float x)  { return std::floor(x + 0.5f); };
+            for (int i =0; i < Y_t->numel(); ++i) {
+                temp_weight_data[i] = static_cast<int8_t>(
+                    round_scale( old_weight_data[i] / weight_scale));
+            }
 
-        //quant weights
-        float* old_weight_data = Y_t->data<float>();
-        framework::LoDTensor temp_tensor;
+            // copy int8 weights to GPU
+            int8_t * weight_int8_data;
+            PADDLE_ENFORCE_GPU_SUCCESS(cudaMalloc(reinterpret_cast<void**>(&weight_int8_data), 
+                sizeof(int8_t) * dims[0] * dims[1]));
+            PADDLE_ENFORCE_GPU_SUCCESS(
+                cudaMemcpy(weight_int8_data, temp_weight_data, sizeof(int8_t) * dims[0] * dims[1], cudaMemcpyHostToDevice));
 
-        //erase old weights var
-        scope_->EraseVars({weights_name_}); 
-
-        //create new weights var
-        framework::Variable *new_weight_v = scope_->Var(weights_name_);
-        framework::LoDTensor* new_weight_t = new_weight_v -> GetMutable<framework::LoDTensor>();
-        new_weight_t -> Resize(dims);
-        int8_t* new_weight_data = new_weight_t->mutable_data<int8_t>(platform::CUDAPlace(dev_id_));
-        std::vector<int8_t> new_weight_data_h(new_weight_t->numel(), 12);
-        VLOG(1) << "copy " << new_weight_t->numel() * sizeof(int8_t) << "bytes to device";
-        cudaMemcpy(new_weight_data, new_weight_data_h.data(), new_weight_t->numel() * sizeof(int8_t), cudaMemcpyHostToDevice);
-
-        VLOG(1) << "new weights tensor type: " << new_weight_t->name();
-        VLOG(1) << "new weights tensor element num: " << new_weight_t->numel();
-        VLOG(1) << "new weights tensor dims" << new_weight_t->dims();
+            // Transform weight
+            // create desc
+            VLOG(1) << "create desc ";
+            PADDLE_ENFORCE_GPU_SUCCESS(dyl::cublasLtCreate(&handle_));
+            cublasLtMatrixLayout_t weight_origin_desc;
+            PADDLE_ENFORCE_GPU_SUCCESS(dyl::cublasLtMatrixLayoutCreate(&weight_origin_desc, CUDA_R_8I, k_, n_, k_));
+            cublasLtOrder_t order_COL4_4R2_8C = CUBLASLT_ORDER_COL4_4R2_8C;
+            int ldbtransform = 32 * ((n_ + 8 - 1) / 8) * 8;
+            PADDLE_ENFORCE_GPU_SUCCESS(dyl::cublasLtMatrixLayoutCreate(&weight_transform_desc_, CUDA_R_8I, n_, k_, ldbtransform));
+            PADDLE_ENFORCE_GPU_SUCCESS(dyl::cublasLtMatrixLayoutSetAttribute(weight_transform_desc_, 
+                                                                        CUBLASLT_MATRIX_LAYOUT_ORDER, 
+                                                                        &order_COL4_4R2_8C, sizeof(order_COL4_4R2_8C)));
+            // create new weight var
+            VLOG(1) << "create new weight var ";
+            Y_v_gpu = scope_->Var(weight_name_gpu);
+            Y_t_gpu = Y_v_gpu -> GetMutable<framework::LoDTensor>();
+            Y_t_gpu -> Resize({(k_ + 32 - 1) / 32 * ldbtransform});
+            int8_t *weight_transform_data = Y_t_gpu->mutable_data<int8_t>(platform::CUDAPlace(dev_id_));
+            // cudaMalloc(reinterpret_cast<void**>(&weight_transform), sizeof(int8_t) * (k_ + 32 - 1) / 32 * ldbtransform);
+            PADDLE_ENFORCE_GPU_SUCCESS(dyl::cublasLtMatrixTransformDescCreate(&transform_desc_, CUDA_R_32F));
+            float alpha = 1.0f, beta = 0.0f;
+            cublasOperation_t op_transpose = CUBLAS_OP_T;
+            dyl::cublasLtMatrixTransformDescSetAttribute(transform_desc_, CUBLASLT_MATRIX_TRANSFORM_DESC_TRANSA, &op_transpose, sizeof(op_transpose)); 
+            PADDLE_ENFORCE_GPU_SUCCESS(dyl::cublasLtMatrixTransform(handle_, transform_desc_, (void*)&alpha, weight_int8_data, weight_origin_desc, 
+                (void*)&beta, nullptr, nullptr, weight_transform_data, weight_transform_desc_, (cudaStream_t)0));
+            op_transpose = CUBLAS_OP_N;
+            dyl::cublasLtMatrixTransformDescSetAttribute(transform_desc_, CUBLASLT_MATRIX_TRANSFORM_DESC_TRANSA, &op_transpose, sizeof(op_transpose)); 
+            cudaDeviceSynchronize();
+            if (weight_int8_data) PADDLE_ENFORCE_GPU_SUCCESS(cudaFree(weight_int8_data));
+        } else {
+            VLOG(1) << "gpu weight is initialized from scope";
+            auto* Y_t_gpu = Y_v_gpu->GetMutable<framework::LoDTensor>();
+            VLOG(1) << "copied weight tensor type: " << Y_t_gpu->name();
+            VLOG(1) << "copied weight tensor element num: " << Y_t_gpu->numel();
+            VLOG(1) << "copied weight tensor dims" << Y_t_gpu->dims();  
+        }        
 }
 
 
@@ -108,7 +158,7 @@ bool FcPluginDynamic::supportsFormatCombination(int pos,
         // const nvinfer1::PluginTensorDesc &prev = in_out[pos - 1];
         // // output
         // return in.type == prev.type && in.format == prev.format;
-        return in.type == nvinfer1::DataType::kINT8 && in.format == nvinfer1::TensorFormat::kLINEAR;
+        return (in.type == nvinfer1::DataType::kFLOAT || in.type == nvinfer1::DataType::kINT8) && in.format == nvinfer1::TensorFormat::kLINEAR;
 }
 
 nvinfer1::DataType FcPluginDynamic::getOutputDataType(
@@ -124,9 +174,10 @@ void FcPluginDynamic::configurePlugin(const nvinfer1::DynamicPluginTensorDesc* i
     const nvinfer1::DynamicPluginTensorDesc* out,
     int nb_outputs) TRT_NOEXCEPT {
     VLOG(1) << "[DEBUG] configurePlugin";
-    //Get weights tensor
-    // auto* Y_v = scope_->FindVar(weights_name_); // auto == Variable
+    //Get weight tensor
+    // auto* Y_v = scope_->FindVar(weight_name_); // auto == Variable
     // auto* Y_t = Y_v->GetMutable<framework::LoDTensor>();
+    
     
 }
 
@@ -134,37 +185,97 @@ int FcPluginDynamic::enqueue(const nvinfer1::PluginTensorDesc* inputDesc,
     const nvinfer1::PluginTensorDesc* outputDesc,
     const void* const* inputs, void* const* outputs, void* workspace,
     cudaStream_t stream) TRT_NOEXCEPT {
-    //Get weights tensor
+    // Get m
+    nvinfer1::Dims input_dims = inputDesc[0].dims, output_dims = outputDesc[0].dims;
+    m_ = input_dims.d[0] * input_dims.d[1];
+    VLOG(1) << "m_" << m_;
+    VLOG(1) << "k_" << k_;
+    VLOG(1) << "n_" << n_;
 
+    //Get weight tensor
     VLOG(1) << "fc plugin enqueue";
     VLOG(1) << "scope_ " << scope_;
-    VLOG(1) << "weights_name_ " << weights_name_;
+    VLOG(1) << "weight_name_ " << weight_name_;
 
-    auto* Y_v = scope_->FindVar(weights_name_); // auto == Variable
+    auto* weight_transform_var = scope_->FindVar(weight_name_); // auto == Variable
     PADDLE_ENFORCE_NOT_NULL(
-        Y_v,
+        weight_transform_var,
         platform::errors::NotFound(
-            "variable %s is not found in TensorRT subgraph.", weights_name_));
+            "variable %s is not found in TensorRT subgraph.", weight_name_));
     VLOG(1) << "find Y_v";
-    auto* Y_t = Y_v->GetMutable<framework::LoDTensor>();
+    auto* weight_transform_tensor = weight_transform_var->GetMutable<framework::LoDTensor>();
     VLOG(1) << "find Y_t";
-    int8_t* weight_data = Y_t->data<int8_t>();
-    VLOG(1) << "find weight_data";
-    std::vector<int8_t> weights_data_h(Y_t->numel());
-    VLOG(1) << "copy " << Y_t->numel() * sizeof(int8_t) << "bytes to host";
-    cudaMemcpy(weights_data_h.data(), weight_data, Y_t->numel() * sizeof(int8_t), cudaMemcpyDeviceToHost);
-    // for (int i = 0; i < Y_t->numel(); ++i) {
-        VLOG(1) << static_cast<int>(weights_data_h[0]);
-    // }
+    int8_t* weight_transform_data = weight_transform_tensor->data<int8_t>();
+    
+    // Transform A
+    const int8_t* input_data = static_cast<const int8_t*>(inputs[0]);
 
-    if (inputDesc->type == nvinfer1::DataType::kINT8) {
-         const int8_t * in = static_cast<const int8_t *>(inputs[0]);
-         VLOG(1) << "get in";
-        int8_t in_1;
-        cudaMemcpy(&in_1, in, sizeof(int8_t), cudaMemcpyDeviceToHost);
-         VLOG(1) << "input " << static_cast<int>(in_1);
+    cublasLtMatrixLayout_t input_desc;
+    dyl::cublasLtMatrixLayoutCreate(&input_desc, CUDA_R_8I, m_, k_, m_);
 
-    }
+    cublasLtMatrixLayout_t input_transform_desc;
+    cublasLtOrder_t order_COL32 = CUBLASLT_ORDER_COL32;
+    int ldatransform = 32 * m_;
+    dyl::cublasLtMatrixLayoutCreate(&input_transform_desc, CUDA_R_8I, m_, k_, ldatransform);
+    dyl::cublasLtMatrixLayoutSetAttribute(input_transform_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &order_COL32, sizeof(order_COL32));
+    int8_t *input_transform_data;
+    VLOG(1) << "prepare transform A " << "ldatransform " << ldatransform << " (k_ + 32 - 1) / 32 " << (k_ + 32 - 1) / 32;
+    PADDLE_ENFORCE_GPU_SUCCESS(cudaMalloc(reinterpret_cast<void**>(&input_transform_data), sizeof(int8_t) * (k_ + 32 - 1) / 32 * ldatransform));
+
+    float alpha = 1.0f, beta = 0.0f;
+    PADDLE_ENFORCE_GPU_SUCCESS(dyl::cublasLtMatrixTransform(handle_, transform_desc_, &alpha, input_data, input_desc, 
+        &beta, nullptr, nullptr, input_transform_data, input_transform_desc, stream));
+
+    // Just malloc c_transform
+    cublasLtMatrixLayout_t c_transdesc;
+    int ldctransform = 32 * m_;
+    dyl::cublasLtMatrixLayoutCreate(&c_transdesc, CUDA_R_8I, m_, n_, ldctransform);
+    dyl::cublasLtMatrixLayoutSetAttribute(c_transdesc, CUBLASLT_MATRIX_LAYOUT_ORDER, &order_COL32, sizeof(order_COL32));
+
+    VLOG(1) << "Prepare tranform C space " << "ldctransform " << ldctransform << " (n_ + 32 - 1) / 32 " << (n_ + 32 - 1) / 32;
+    int8_t *c_transform_data;
+    PADDLE_ENFORCE_GPU_SUCCESS(cudaMalloc(reinterpret_cast<void**>(&c_transform_data), sizeof(int8_t) * (n_ + 32 - 1) / 32 * ldctransform));
+
+    // Perform matmul
+    // init desc
+    cublasLtMatmulDesc_t matmulDesc;
+    dyl::cublasLtMatmulDescCreate(&matmulDesc, CUBLAS_COMPUTE_32I, CUDA_R_32F);
+    cublasOperation_t op_transpose = CUBLAS_OP_T;
+    dyl::cublasLtMatmulDescSetAttribute(matmulDesc, CUBLASLT_MATMUL_DESC_TRANSB, &op_transpose, sizeof(op_transpose));
+
+    // run
+    VLOG(1) << "run matmul";
+    PADDLE_ENFORCE_GPU_SUCCESS(dyl::cublasLtMatmul(handle_,
+        matmulDesc,
+        &alpha,
+        input_transform_data,
+        input_transform_desc,
+        weight_transform_data,
+        weight_transform_desc_,
+        &beta,
+        c_transform_data,
+        c_transdesc,
+        c_transform_data,
+        c_transdesc,
+        nullptr,
+        nullptr,
+        0,
+        stream));
+
+    // De-Transform C and write to output
+    int8_t* output_data = static_cast<int8_t*>(outputs[0]);
+    cublasLtMatrixLayout_t output_desc;
+    dyl::cublasLtMatrixLayoutCreate(&output_desc, CUDA_R_8I, m_, n_, m_);
+    VLOG(1) << "de-transform c";
+    VLOG(1) << "out dims[0] " << output_dims.d[0] << " out dims[1] " << output_dims.d[1];
+    PADDLE_ENFORCE_GPU_SUCCESS(dyl::cublasLtMatrixTransform(handle_, transform_desc_, &alpha, c_transform_data, c_transdesc, 
+        &beta, nullptr, nullptr, output_data, output_desc, stream));
+
+    cudaDeviceSynchronize();
+    VLOG(1) << "free c_transform_data";
+    if (c_transform_data) PADDLE_ENFORCE_GPU_SUCCESS(cudaFree(c_transform_data));
+    VLOG(1) << "free input_transform_data";
+    if (input_transform_data) PADDLE_ENFORCE_GPU_SUCCESS(cudaFree(input_transform_data));
     return cudaGetLastError() != cudaSuccess;
 }
 
