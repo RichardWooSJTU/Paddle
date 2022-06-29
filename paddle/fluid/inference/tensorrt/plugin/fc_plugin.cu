@@ -240,12 +240,17 @@ int FcPluginDynamic::enqueue(const nvinfer1::PluginTensorDesc* inputDesc,
     dyl::cublasLtMatrixLayoutCreate(&input_transform_desc, CUDA_R_8I, m_, k_, ldatransform);
     dyl::cublasLtMatrixLayoutSetAttribute(input_transform_desc, CUBLASLT_MATRIX_LAYOUT_ORDER, &order_COL32, sizeof(order_COL32));
 
+    int8_t *input_transpose_data;
+    VLOG(1) << "transpose input";
+    PADDLE_ENFORCE_GPU_SUCCESS(cudaMalloc(reinterpret_cast<void**>(&input_transpose_data), sizeof(int8_t) * m_ * k_));
+    transpose_kernelLauncher(input_data, input_transpose_data, m_, k_, stream);
+
     int8_t *input_transform_data;
     VLOG(1) << "prepare transform A " << "ldatransform " << ldatransform << " (k_ + 32 - 1) / 32 " << (k_ + 32 - 1) / 32;
     PADDLE_ENFORCE_GPU_SUCCESS(cudaMalloc(reinterpret_cast<void**>(&input_transform_data), sizeof(int8_t) * (k_ + 32 - 1) / 32 * ldatransform));
 
     float alpha = 1.0f, beta = 0.0f;
-    PADDLE_ENFORCE_GPU_SUCCESS(dyl::cublasLtMatrixTransform(handle_, transform_desc_, &alpha, input_data, input_desc, 
+    PADDLE_ENFORCE_GPU_SUCCESS(dyl::cublasLtMatrixTransform(handle_, transform_desc_, &alpha, input_transpose_data, input_desc, 
         &beta, nullptr, nullptr, input_transform_data, input_transform_desc, stream));
 
     // Just malloc c_transform
@@ -286,6 +291,10 @@ int FcPluginDynamic::enqueue(const nvinfer1::PluginTensorDesc* inputDesc,
 
     // De-Transform C and write to output
     int8_t* output_data = static_cast<int8_t*>(outputs[0]);
+
+    VLOG(1) << "transpose output";
+    transpose_kernelLauncher(output_data, output_data, m_, n_, stream);
+
     cublasLtMatrixLayout_t output_desc;
     dyl::cublasLtMatrixLayoutCreate(&output_desc, CUDA_R_8I, m_, n_, m_);
     VLOG(1) << "de-transform c";
@@ -298,6 +307,8 @@ int FcPluginDynamic::enqueue(const nvinfer1::PluginTensorDesc* inputDesc,
     if (c_transform_data) PADDLE_ENFORCE_GPU_SUCCESS(cudaFree(c_transform_data));
     VLOG(1) << "free input_transform_data";
     if (input_transform_data) PADDLE_ENFORCE_GPU_SUCCESS(cudaFree(input_transform_data));
+    VLOG(1) << "free input_transpose_data";
+    if (input_transpose_data) PADDLE_ENFORCE_GPU_SUCCESS(cudaFree(input_transpose_data));
     return cudaGetLastError() != cudaSuccess;
 }
 
