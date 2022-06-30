@@ -17,6 +17,7 @@ limitations under the License. */
 #include "paddle/fluid/inference/tensorrt/plugin/transformer_decoder_op_plugin.h"
 #include "paddle/fluid/inference/tensorrt/plugin/slice_op_plugin.h"
 #include "paddle/fluid/inference/tensorrt/plugin/gelu_op_plugin.h"
+#include "paddle/fluid/inference/tensorrt/plugin/fc_plugin.h"
 
 namespace paddle {
 namespace inference {
@@ -122,13 +123,21 @@ class TransformerDecoderOpConverter : public OpConverter {
 //                .c_str());
 
         // add layer fc
-        nvinfer1::ILayer* fc_layer = nullptr;
+        // nvinfer1::ILayer* fc_layer = nullptr;
 //        if (op_desc.HasAttr("Input_scale")) {
-          nvinfer1::DimsHW nv_ksize(1, 1);
-        VLOG(5) << "Add Convolution and set scale";
-          fc_layer = TRT_ENGINE_ADD_LAYER(
-              engine_, Convolution, *reshape_before_fc_layer->getOutput(0), n,
-              nv_ksize, weight.get(), bias.get());
+        // nvinfer1::DimsHW nv_ksize(1, 1);
+        // VLOG(5) << "Add Convolution and set scale";
+        //   fc_layer = TRT_ENGINE_ADD_LAYER(
+        //       engine_, Convolution, *reshape_before_fc_layer->getOutput(0), n,
+        //       nv_ksize, weight.get(), bias.get());
+        std::vector<nvinfer1::ITensor*> fc_plugin_inputs{reshape_before_fc_layer->getOutput(0)};
+        framework::Scope* scope_p = const_cast<framework::Scope*>(&scope);
+        plugin::DynamicPluginTensorRT* fc_plugin = new plugin::FcPluginDynamic(weight_name,  bias_name, scope_p, 0,
+                                                                                m, 
+                                                                                n);
+        auto* fc_layer = engine_->network()->addPluginV2(fc_plugin_inputs.data(), 1, *fc_plugin);
+
+        
 //        } else {
 //          fc_layer = TRT_ENGINE_ADD_LAYER(
 //              engine_, FullyConnected, *reshape_before_fc_layer->getOutput(0),

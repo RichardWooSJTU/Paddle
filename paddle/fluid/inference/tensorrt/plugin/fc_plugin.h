@@ -35,7 +35,7 @@ namespace plugin {
 #if IS_TRT_VERSION_GE(6000)
 class FcPluginDynamic : public DynamicPluginTensorRT {
  public:
-    explicit FcPluginDynamic(std::string weight_name, std::string bias_name, framework::Scope* scope, int dev_id);
+    explicit FcPluginDynamic(std::string weight_name, std::string bias_name, framework::Scope* scope, int dev_id, int k, int n);
     FcPluginDynamic(std::string weight_name, std::string bias_name, framework::Scope* scope, int dev_id, int n, int k,
                     cublasLtHandle_t handle, cublasLtMatrixLayout_t weight_transform_desc,
                     cublasLtMatrixTransformDesc_t transform_desc):

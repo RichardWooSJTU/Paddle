@@ -244,10 +244,21 @@ class FcOpConverter : public OpConverter {
     auto regist_fc_plugin = [&](nvinfer1::ITensor* inputs, const framework::Scope* scope_cp) {
       std::vector<nvinfer1::ITensor*> plugin_inputs{inputs};
       framework::Scope* scope_p = const_cast<framework::Scope*>(scope_cp);
+      plugin::DynamicPluginTensorRT* plugin;
 
-      auto* plugin = new plugin::FcPluginDynamic(op_desc.Input(w_name).front(), 
+      if (with_bias) {
+        plugin = new plugin::FcPluginDynamic(op_desc.Input(w_name).front(), 
                                                                           op_desc.Input("Bias").front(),
-                                                                          scope_p, 0);
+                                                                          scope_p, 0,
+                                                                          m, // k_
+                                                                          n); // n_
+      } else {
+        plugin = new plugin::FcPluginDynamic(op_desc.Input(w_name).front(), 
+                                                                          "",
+                                                                          scope_p, 0,
+                                                                           m, // k_
+                                                                          n); // n_
+      }
       // auto* fc_layer = engine_->AddDynamicPlugin(plugin_inputs.data(), 1, plugin);
       auto* fc_layer = engine_->network()->addPluginV2(plugin_inputs.data(), 1, *plugin);
 
@@ -266,6 +277,7 @@ class FcOpConverter : public OpConverter {
             fc_layer->getOutput(0), x_dim, x_num_col_dims);
       VLOG(1) << "fc_after_reshape_int8 " << fc_after_reshape_int8->getOutput(0)->getDimensions().nbDims;
       if (activation_type == "relu") {
+        VLOG(1) << "activation_type == relu";
         fc_after_reshape_int8->setName(
             ("int8_reshape_after_fc: Shuffle (Output: " + output_name + ")")
                 .c_str());
@@ -280,7 +292,10 @@ class FcOpConverter : public OpConverter {
                                   "relu_after_fc_shuffle",
                                   {output_name},
                                   test_mode);
+        engine_->SetTensorDynamicRange(relu_layer_int8->getOutput(0), out_scale);
       } else {
+        VLOG(1) << "activation_type != relu";
+        engine_->SetTensorDynamicRange(fc_after_reshape_int8->getOutput(0), out_scale);
         RreplenishLayerAndOutput(fc_after_reshape_int8,
                                   "fc_op_int8_reshape_after_fc: Shuffle",
                                   {output_name},
