@@ -21,8 +21,9 @@ namespace inference {
 namespace tensorrt {
 namespace plugin {
 
-__global__ void transpose_kernel(const int8_t* src,
-                                 int8_t* dst,
+template <typename T>
+__global__ void transpose_kernel(const T* src,
+                                 T* dst,
                                  int row,
                                  int col) {
   int i = blockIdx.x * blockDim.x + threadIdx.x; // row
@@ -31,11 +32,12 @@ __global__ void transpose_kernel(const int8_t* src,
   dst[j * row + i] = src[i * col + j];
 }
 
-void transpose_kernelLauncher(const int8_t* input,
-                              int8_t* output,
-                                 int row,
-                                 int col,
-                                 cudaStream_t stream) {
+template <typename T>
+void transpose_kernelLauncher(const T* input,
+                              T* output,
+                              int row,
+                              int col,
+                              cudaStream_t stream) {
   dim3 grid((row + 31) / 32, (col + 31) / 32);
   dim3 block(32, 32);
   transpose_kernel<<<grid, block, 0, stream>>>(input, output, row, col);
@@ -243,7 +245,7 @@ int FcPluginDynamic::enqueue(const nvinfer1::PluginTensorDesc* inputDesc,
     int8_t *input_transpose_data;
     VLOG(1) << "transpose input";
     PADDLE_ENFORCE_GPU_SUCCESS(cudaMalloc(reinterpret_cast<void**>(&input_transpose_data), sizeof(int8_t) * m_ * k_));
-    transpose_kernelLauncher(input_data, input_transpose_data, m_, k_, stream);
+    transpose_kernelLauncher<int8_t>(input_data, input_transpose_data, m_, k_, stream);
 
     int8_t *input_transform_data;
     VLOG(1) << "prepare transform A " << "ldatransform " << ldatransform << " (k_ + 32 - 1) / 32 " << (k_ + 32 - 1) / 32;
@@ -292,8 +294,6 @@ int FcPluginDynamic::enqueue(const nvinfer1::PluginTensorDesc* inputDesc,
     // De-Transform C and write to output
     int8_t* output_data = static_cast<int8_t*>(outputs[0]);
 
-    VLOG(1) << "transpose output";
-    transpose_kernelLauncher(output_data, output_data, m_, n_, stream);
 
     cublasLtMatrixLayout_t output_desc;
     dyl::cublasLtMatrixLayoutCreate(&output_desc, CUDA_R_8I, m_, n_, m_);
@@ -301,6 +301,9 @@ int FcPluginDynamic::enqueue(const nvinfer1::PluginTensorDesc* inputDesc,
     VLOG(1) << "out dims[0] " << output_dims.d[0] << " out dims[1] " << output_dims.d[1];
     PADDLE_ENFORCE_GPU_SUCCESS(dyl::cublasLtMatrixTransform(handle_, transform_desc_, &alpha, c_transform_data, c_transdesc, 
         &beta, nullptr, nullptr, output_data, output_desc, stream));
+
+    VLOG(1) << "transpose output";
+    transpose_kernelLauncher<int32_t>(output_data, output_data, n_, m_, stream);
 
     cudaDeviceSynchronize();
     VLOG(1) << "free c_transform_data";
