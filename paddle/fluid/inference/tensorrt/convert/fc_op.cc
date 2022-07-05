@@ -183,6 +183,9 @@ class FcOpConverter : public OpConverter {
         fc_layer_int8->setName(
             ("fc_op_int8_conv1x1: Convolution (Output: " + output_name + ")")
                 .c_str());
+        fc_layer_int8->setPrecision(nvinfer1::DataType::kINT8);
+      fc_layer_int8->setOutputType(0, nvinfer1::DataType::kINT8);
+      fc_layer_int8->getOutput(0)->setType(nvinfer1::DataType::kINT8);
         engine_->SetTensorDynamicRange(fc_layer_int8->getOutput(0), out_scale);
         auto* fc_after_reshape_int8 = reshape_after_fc(
             fc_layer_int8->getOutput(0), x_dim, x_num_col_dims);
@@ -265,6 +268,9 @@ class FcOpConverter : public OpConverter {
       fc_layer->setName(
             ("fc_op_int8: Plugin (Output: " + output_name + ")")
                 .c_str());
+      fc_layer->setPrecision(nvinfer1::DataType::kINT8);
+      fc_layer->setOutputType(0, nvinfer1::DataType::kINT8);
+      fc_layer->getOutput(0)->setType(nvinfer1::DataType::kINT8);
       float out_scale = 1.0;
       // if (enable_int8 || support_int8) {
       //   out_scale = BOOST_GET_CONST(float, op_desc.GetAttr("Out"));
@@ -309,6 +315,7 @@ class FcOpConverter : public OpConverter {
     }
     int weight_w, weight_h;
     if (!transpose_y) {
+      VLOG(1) << "we need to transpose weights";
       std::vector<float> weight_data_tmp;
       weight_data_tmp.reserve(Y_t->numel());
       memcpy(weight_data_tmp.data(), weight_data, Y_t->numel() * sizeof(float));
@@ -316,6 +323,7 @@ class FcOpConverter : public OpConverter {
       weight_w = n;
       weight_h = m;
     } else {
+      VLOG(1) << "no need to transpose weights";
       weight_w = m;
       weight_h = n;
     }

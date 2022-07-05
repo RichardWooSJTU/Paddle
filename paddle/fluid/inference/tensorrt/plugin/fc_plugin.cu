@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "paddle/fluid/inference/tensorrt/plugin/fc_plugin.h"
+#include "paddle/fluid/inference/tensorrt/plugin/utils.h"
 
 namespace dyl = paddle::platform::dynload;
 
@@ -21,12 +22,68 @@ namespace inference {
 namespace tensorrt {
 namespace plugin {
 
+__global__ void DequantizeKernel(int8_t* src, half* dst, half scale, int num_raws, int num_cols) {
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= num_raws * num_cols) return;
+    dst[tid] = (half)src[tid] * scale / (half)127.0;
+}
+
+template <typename T>
+__global__ void AddBias(T* res, T* bias, int num_raws, int num_cols) {
+    auto tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= num_raws * num_cols) return;
+    int res_i = tid;
+    int bias_i = tid % num_cols;
+    res[res_i] += bias[bias_i];
+}
+
+__global__ void transpose_kernel(const int8_t* src,
+    int8_t* dst,
+    int row,
+    int col) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x; // row
+    if (i >= row) return;
+    int j = blockIdx.y * blockDim.y + threadIdx.y; // col
+    if (j >= col) return;
+
+    dst[j * row + i] = src[i * col + j];
+}
+
+void LaunchTranspose(const int8_t* input,
+ int8_t* output,
+    int row,
+    int col,
+    cudaStream_t stream) {
+    dim3 grid((row + 31) / 32, (col + 31) / 32);
+    dim3 block(32, 32);
+    transpose_kernel<<<grid, block, 0, stream>>>(input, output, row, col);
+}
+
+
 FcPluginDynamic::FcPluginDynamic(std::string weight_name, std::string bias_name, framework::Scope* scope, int dev_id, int k, int n)
     : weight_name_(weight_name), bias_name_(bias_name), scope_(scope), dev_id_(dev_id), k_(k), n_(n) {
         VLOG(1) << "[DEBUG] FcPluginDynamic";
         VLOG(1) << "[DEBUG] buildtime scope addr " << scope;
         auto* Y_v = scope_->FindVar(weight_name); // auto == Variable
+        PADDLE_ENFORCE_NOT_NULL(
+            Y_v, platform::errors::Fatal("Y_v should not be null, check weight name"));
         auto* Y_t = Y_v->GetMutable<framework::LoDTensor>();
+
+        framework::Variable* bias_v = nullptr;
+        framework::LoDTensor* bias_t = nullptr;
+        if (bias_name != "") {
+            bias_v = scope_->FindVar(bias_name);
+            PADDLE_ENFORCE_NOT_NULL(
+                bias_v, platform::errors::Fatal("bias_v should not be null, check bias name"));
+            bias_t = bias_v->GetMutable<framework::LoDTensor>();
+            VLOG(1) << "bias tensor info: ";
+            VLOG(1) << "bias tensor type: " << bias_t->name();
+            VLOG(1) << "bias tensor element num: " << bias_t->numel();
+            VLOG(1) << "bias tensor dims" << bias_t->dims();
+
+            VLOG(1) << "bias tensor dtype" << bias_t->dtype();
+            VLOG(1) << "bias tensor layout"<< bias_t->layout();
+        }
         auto dims = Y_t->dims();
         // k_ = dims[0];
         VLOG(1) << "[DEBUG] k_ " << k_;
@@ -43,9 +100,14 @@ FcPluginDynamic::FcPluginDynamic(std::string weight_name, std::string bias_name,
 
         std::string gpu_suffix = "_gpu_for_fc";
         std::string weight_name_gpu = weight_name + gpu_suffix;
+        std::string bias_name_gpu = bias_name + gpu_suffix;
         weight_name_ = weight_name_gpu;
+        if (bias_name != "")
+            bias_name_ = bias_name_gpu;
         framework::Variable* Y_v_gpu = scope_->FindVar(weight_name_gpu);
         framework::LoDTensor* Y_t_gpu;
+        framework::Variable* bias_v_gpu = scope_->FindVar(bias_name_gpu);
+        framework::LoDTensor* bias_t_gpu;
 
         // create desc
         cublasStatus_t status;
@@ -68,37 +130,45 @@ FcPluginDynamic::FcPluginDynamic(std::string weight_name, std::string bias_name,
         status = dyl::cublasLtMatrixTransformDescCreate(&transform_desc_, CUDA_R_32F);
         PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatrixTransformDescCreate"));
         if (Y_v_gpu == nullptr) {
-            
-
             //quant weight
             float* old_weight_data = Y_t->data<float>();
             float weight_max = 0.0f;
+            VLOG(1) << "weights data " << weight_name;
             for (int i =0; i < Y_t->numel(); ++i) {
+                // std::cout << old_weight_data[i] << " ";
                 if (old_weight_data[i] > weight_max) {
                     weight_max = old_weight_data[i];
                 }
             }
+            // std::cout << std::endl;
             VLOG(1) << "begin quant ";
             PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
             framework::LoDTensor scale_tensor;
             scale_tensor.Resize(dims);
             int8_t* temp_weight_data = scale_tensor.mutable_data<int8_t>(platform::CPUPlace());
-            float weight_scale = weight_max / 127.0;
+            // float weight_scale = weight_max / 127.0;
+            float weight_scale = 0.007874015748031496;
             VLOG(1) << "weights scale " << weight_scale;
             PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
-            auto round_scale = [](float x)  { return std::floor(x + 0.5f); };
+            VLOG(1) << "weights quantize data " << weight_name;
             for (int i =0; i < Y_t->numel(); ++i) {
                 temp_weight_data[i] = static_cast<int8_t>(
                     round_scale( old_weight_data[i] / weight_scale));
+                // std::cout << static_cast<int>(temp_weight_data[i]) << " ";
             }
+            // std::cout << std::endl;
 
             // copy int8 weights to GPU
-            int8_t * weight_int8_data;
+            int8_t * weight_int8_data, * weight_int8_data_tmp;
             // PADDLE_ENFORCE_GPU_SUCCESS(cudaMalloc(reinterpret_cast<void**>(&weight_int8_data), 
             PADDLE_ENFORCE_GPU_SUCCESS(cudaMalloc(&weight_int8_data, 
                 sizeof(int8_t) * n_ * k_));
+            PADDLE_ENFORCE_GPU_SUCCESS(cudaMalloc(&weight_int8_data_tmp, 
+                    sizeof(int8_t) * n_ * k_));
             PADDLE_ENFORCE_GPU_SUCCESS(
-                cudaMemcpy(weight_int8_data, temp_weight_data, sizeof(int8_t) * n_ * k_, cudaMemcpyHostToDevice));
+                cudaMemcpy(weight_int8_data_tmp, temp_weight_data, sizeof(int8_t) * n_ * k_, cudaMemcpyHostToDevice));
+
+            LaunchTranspose(weight_int8_data_tmp, weight_int8_data, k_, n_, 0);
 
             // Transform weight
             
@@ -130,7 +200,48 @@ FcPluginDynamic::FcPluginDynamic(std::string weight_name, std::string bias_name,
             VLOG(1) << "copied weight tensor type: " << Y_t_gpu->name();
             VLOG(1) << "copied weight tensor element num: " << Y_t_gpu->numel();
             VLOG(1) << "copied weight tensor dims" << Y_t_gpu->dims();  
-        }        
+        }
+
+        if (bias_v_gpu != nullptr) {
+            VLOG(1) << "gpu bias is initialized from scope";
+            auto* bias_t_gpu = bias_v_gpu->GetMutable<framework::LoDTensor>();
+        } else if (bias_v != nullptr && bias_t != nullptr) {
+            // quantize and sync to GPU
+            // TODO(@wufeisheng): if multiple precision should be surported, 1. sync multiple bias to gpu 2. reformat when enqueue
+
+            VLOG(1) << "bias data " << bias_name;
+            float * old_bias_data = bias_t -> data<float>(); 
+            float bias_max = 0.0f;
+            for (int i =0; i < bias_t->numel(); ++i) {
+                // std::cout << old_bias_data[i] << " ";
+                if (old_bias_data[i] > bias_max) {
+                    bias_max = old_bias_data[i];
+                }
+            }
+            // std::cout << std::endl;
+            VLOG(1) << "begin quant ";
+            std::vector<int8_t> scaled_bias(bias_t->numel());
+            // float bias_scale = bias_max / 127.0;
+            float bias_scale = 0.007874015748031496;
+            VLOG(1) << "bias_scale " << bias_scale;
+            for (int i =0; i < bias_t->numel(); ++i) {
+                scaled_bias[i] = static_cast<int8_t>(
+                    round_scale( old_bias_data[i] / bias_scale));
+            }
+
+            bias_v_gpu = scope_->Var(bias_name_gpu);
+            bias_t_gpu = bias_v_gpu -> GetMutable<framework::LoDTensor>();
+            VLOG(1) << "bias_t->dims()" << bias_t->dims();
+            bias_t_gpu -> Resize(bias_t->dims());
+            int8_t *bias_data = bias_t_gpu->mutable_data<int8_t>(platform::CUDAPlace(dev_id_));
+            PADDLE_ENFORCE_GPU_SUCCESS(
+                cudaMemcpy(bias_data, scaled_bias.data(), sizeof(int8_t) * n_, cudaMemcpyHostToDevice));
+
+        } else if (bias_t == nullptr) {
+            VLOG(1) << "why bias_t is null while bias_v is not";
+        }
+        
+        
 }
 
 
@@ -233,26 +344,6 @@ int FcPluginDynamic::enqueue(const nvinfer1::PluginTensorDesc* inputDesc,
     cudaStream_t stream) TRT_NOEXCEPT {
     auto input_type = inputDesc[0].type;
     auto output_type = outputDesc[0].type;
-    if (input_type != nvinfer1::DataType::kINT8 ) {
-        VLOG(1) << "input type is not int8";
-        for (int i  = 0; i < 10000000; i++){
-            float t = (float)(i+2)/(float)(i+1);
-            float tt = t / 2.0;
-            VLOG(10) << tt;
-        }
-        return cudaGetLastError() != cudaSuccess;
-    }
-
-    if (output_type != nvinfer1::DataType::kINT8 ) {
-        VLOG(1) << "output type is not int8";
-        for (int i  = 0; i < 1000000; i++){
-            float t = (float)(i+2)/(float)(i+1);
-            float tt = t / 2.0;
-            VLOG(10) << tt;
-        }
-        return cudaGetLastError() != cudaSuccess;
-    }
-
     // Get m
     nvinfer1::Dims input_dims = inputDesc[0].dims, output_dims = outputDesc[0].dims;
     if (input_dims.nbDims == 4) {
@@ -263,8 +354,35 @@ int FcPluginDynamic::enqueue(const nvinfer1::PluginTensorDesc* inputDesc,
     VLOG(1) << "m_" << m_;
     VLOG(1) << "k_" << k_;
     VLOG(1) << "n_" << n_;
+    
     for (int i = 0; i < input_dims.nbDims; ++i)
         VLOG(1) << "input_dims.d[ " << i << "] " << input_dims.d[i];
+    if (input_type != nvinfer1::DataType::kINT8 ) {
+        VLOG(1) << "input type is not int8";
+        // for (int i  = 0; i < 10000000; i++){
+        //     float t = (float)(i+2)/(float)(i+1);
+        //     float tt = t / 2.0;
+        //     VLOG(10) << tt;
+        // }
+        if (input_type == nvinfer1::DataType::kHALF) {
+            const half* input_data_tmp = static_cast<const half*>(inputs[0]);
+            // std::vector<half> input_vec(m_ * k_);
+            // VLOG(1) << "input_data_tmp with half";
+            // PADDLE_ENFORCE_GPU_SUCCESS(cudaMemcpy(input_vec.data(), input_data_tmp, sizeof(half) * m_ * k_, cudaMemcpyDeviceToHost));
+            // for (int i = 0; i < m_ * k_; ++i) {
+            //     std::cout << static_cast<float>(input_vec[i]) << " ";
+            // }
+            // std::cout << std::endl;
+
+            half* output_data = static_cast<half*>(outputs[0]);
+            PADDLE_ENFORCE_GPU_SUCCESS(cudaMemcpy(output_data, input_data_tmp, sizeof(half) * m_ * k_, cudaMemcpyDeviceToDevice));
+        }
+        
+        return cudaGetLastError() != cudaSuccess;
+    }
+
+
+    
 
     //Get weight tensor
     VLOG(1) << "fc plugin enqueue";
@@ -290,9 +408,23 @@ int FcPluginDynamic::enqueue(const nvinfer1::PluginTensorDesc* inputDesc,
     // PADDLE_ENFORCE_GPU_SUCCESS(cudaMemcpy(input_origin_h.data(), input_data_origin, sizeof(int8_t) * m_ * k_, cudaMemcpyDeviceToHost));
     // VLOG(1) << "in[0] " << input_origin_h[0];
 
-    const int8_t* input_data = static_cast<const int8_t*>(inputs[0]);
+    const int8_t* input_data_tmp = static_cast<const int8_t*>(inputs[0]);
     // PADDLE_ENFORCE_GPU_SUCCESS(cudaMalloc(&input_data, sizeof(int8_t) * m_ * k_));
     // PADDLE_ENFORCE_GPU_SUCCESS(cudaMemcpy(input_data, input_origin_h.data(), sizeof(int8_t) * m_ * k_, cudaMemcpyHostToDevice));
+
+    //de bug
+    // VLOG(1) << "input_data_tmp ";
+    // std::vector<int8_t> input_vec(m_ * k_);
+    // PADDLE_ENFORCE_GPU_SUCCESS(cudaMemcpy(input_vec.data(), input_data_tmp, sizeof(int8_t) * m_ * k_, cudaMemcpyDeviceToHost));
+    // for (int i = 0; i < m_ * k_; ++i) {
+    //     std::cout << static_cast<int>(input_vec[i]) << " ";
+    // }
+    // std::cout << std::endl;
+    //de bug
+
+    int8_t* input_data;
+    PADDLE_ENFORCE_GPU_SUCCESS(cudaMalloc(&input_data, sizeof(int8_t) * m_ * k_));
+    LaunchTranspose(input_data_tmp, input_data, m_, k_, stream);
 
 
     cublasLtMatrixLayout_t input_desc;
@@ -370,19 +502,87 @@ int FcPluginDynamic::enqueue(const nvinfer1::PluginTensorDesc* inputDesc,
         0,
         stream);
     PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatmul"));
+    int8_t* bias_data;
+
+    //Get bias data
+    if (bias_name_ != "") {
+        auto* bias_v_gpu = scope_->FindVar(bias_name_);
+        PADDLE_ENFORCE_NOT_NULL(
+            bias_v_gpu,
+            platform::errors::NotFound(
+                "variable %s is not found in TensorRT subgraph.", bias_name_));
+        auto* bias_t_gpu = bias_v_gpu->GetMutable<framework::LoDTensor>();
+        bias_data = bias_t_gpu->data<int8_t>();
+    }
 
     // De-Transform C and write to output
-    int8_t* output_data = static_cast<int8_t*>(outputs[0]);
     cublasLtMatrixLayout_t output_desc;
     status = dyl::cublasLtMatrixLayoutCreate(&output_desc, CUDA_R_8I, m_, n_, m_);
     PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatrixLayoutCreate"));
     VLOG(1) << "de-transform c";
     VLOG(1) << "out dims[0] " << output_dims.d[0] << " out dims[1] " << output_dims.d[1];
     PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
-    status = dyl::cublasLtMatrixTransform(handle_, transform_desc_, &alpha, c_transform_data, c_transdesc, 
-        &beta, nullptr, nullptr, output_data, output_desc, stream);
-    PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatrixTransform"));
 
+    if (output_type == nvinfer1::DataType::kINT8) {
+        int8_t* output_data = static_cast<int8_t*>(outputs[0]);
+        status = dyl::cublasLtMatrixTransform(handle_, transform_desc_, &alpha, c_transform_data, c_transdesc, 
+            &beta, nullptr, nullptr, output_data, output_desc, stream);
+        PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatrixTransform"));
+
+        // add bias
+        int grid, block;
+        CalculateBlockAndGridSize(m_, n_, grid, block);
+        if (bias_name_ != "")
+            AddBias<int8_t><<<grid, block, 0, stream>>>(output_data, bias_data, m_, n_);
+
+        //de bug
+        // VLOG(1) << "output data ";
+        // std::vector<int8_t> output_vec(m_ * n_);
+        // PADDLE_ENFORCE_GPU_SUCCESS(cudaMemcpy(output_vec.data(), output_data, sizeof(int8_t) * m_ * n_, cudaMemcpyDeviceToHost));
+        // for (int i = 0; i < m_ * n_; ++i) {
+        //     std::cout << static_cast<int>(output_vec[i]) << " ";
+        // }
+        // std::cout << std::endl;
+        //de bug
+    
+        
+    } else if (output_type == nvinfer1::DataType::kHALF) {
+        half* output_data = static_cast<half*>(outputs[0]);
+        int8_t* output_data_int8;
+        PADDLE_ENFORCE_GPU_SUCCESS(cudaMalloc(&output_data_int8, sizeof(int8_t) * m_ * n_));
+        
+        status = dyl::cublasLtMatrixTransform(handle_, transform_desc_, &alpha, c_transform_data, c_transdesc, 
+            &beta, nullptr, nullptr, output_data_int8, output_desc, stream);
+        PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatrixTransform"));
+
+        
+        int grid, block;
+        CalculateBlockAndGridSize(m_, n_, grid, block);
+        if (bias_name_ != "")
+            AddBias<int8_t><<<grid, block, 0, stream>>>(output_data_int8, bias_data, m_, n_);
+        
+        //de quantize
+        half out_scale = 1.0;
+        DequantizeKernel<<<grid, block, 0, stream>>>(output_data_int8, output_data, out_scale, m_, n_);
+
+        //de bug
+        // VLOG(1) << "output data ";
+        // std::vector<half> output_vec(m_ * n_);
+        // PADDLE_ENFORCE_GPU_SUCCESS(cudaMemcpy(output_vec.data(), output_data, sizeof(half) * m_ * n_, cudaMemcpyDeviceToHost));
+        // for (int i = 0; i < m_ * n_; ++i) {
+        //     std::cout << static_cast<float>(output_vec[i]) << " ";
+        // }
+        // std::cout << std::endl;
+        //de bug
+
+        VLOG(1) << "cudaDeviceSynchronize";
+        PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
+        VLOG(1) << "free output_data_int8";
+        if (output_data_int8) PADDLE_ENFORCE_GPU_SUCCESS(cudaFree(output_data_int8));
+        return cudaGetLastError() != cudaSuccess;
+    } else {
+        PADDLE_ENFORCE_EQ(output_type == nvinfer1::DataType::kINT8 || output_type == nvinfer1::DataType::kHALF, true, platform::errors::Fatal("not support"));
+    }   
     // if (c_transdesc) dyl::cublasLtMatrixLayoutDestroy(c_transdesc);
     // if (weight_transform_desc_) dyl::cublasLtMatrixLayoutDestroy(weight_transform_desc_);
     // if (input_transform_desc) dyl::cublasLtMatrixLayoutDestroy(input_transform_desc);
@@ -396,9 +596,11 @@ int FcPluginDynamic::enqueue(const nvinfer1::PluginTensorDesc* inputDesc,
     if (c_transform_data) PADDLE_ENFORCE_GPU_SUCCESS(cudaFree(c_transform_data));
     VLOG(1) << "free input_transform_data";
     if (input_transform_data) PADDLE_ENFORCE_GPU_SUCCESS(cudaFree(input_transform_data));
+    VLOG(1) << "free input_data";
+    if (input_data) PADDLE_ENFORCE_GPU_SUCCESS(cudaFree(input_data));
+
     return cudaGetLastError() != cudaSuccess;
 }
-
 }  // namespace plugin
 }  // namespace tensorrt
 }  // namespace inference
