@@ -52,11 +52,11 @@ class LoDResetKernel : public framework::OpKernel<T> {
         out->set_lod(y_lod);
         return;  // early return, since lod already set
       } else {
-        auto* lod = lod_t->data<int>();
+        auto* lod = lod_t->data<T>();
         framework::Tensor lod_cpu;
         if (platform::is_gpu_place(lod_t->place())) {
           framework::TensorCopySync(*lod_t, platform::CPUPlace(), &lod_cpu);
-          lod = lod_cpu.data<int>();
+          lod = lod_cpu.data<T>();
         }
         level0 = std::vector<int>(lod, lod + lod_t->numel());
       }

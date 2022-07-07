@@ -824,7 +824,7 @@ def fused_multi_transformer(x,
     mode = 'downgrade_in_infer' if mode == 'downscale_in_infer' else mode  #semantic transfer
 
     if _non_static_mode():
-        cache_kv_out, final_out = _C_ops.fused_multi_transformer(
+        cache_kv_out, final_out = _C_ops.fused_multi_transformer_int8(
             x, ln_scales, ln_biases, qkv_weights, qkv_biases, cache_kvs,
             time_step, attn_mask, linear_weights, linear_biases, ffn_ln_scales,
             ffn_ln_biases, ffn1_weights, ffn1_biases, ffn2_weights, ffn2_biases,
@@ -836,13 +836,13 @@ def fused_multi_transformer(x,
             return final_out, cache_kv_out
         return final_out
     else:
-        helper = LayerHelper('fused_multi_transformer', **locals())
+        helper = LayerHelper('fused_multi_transformer_int8', **locals())
         dtype = x.dtype
         # check dtypes
         check_variable_and_dtype(x, 'x', ['float16', 'float32'],
-                                 'fused_multi_transformer')
+                                 'fused_multi_transformer_int8')
         check_dtype(dtype, 'dtype', ['float16', 'float32'],
-                    'fused_multi_transformer')
+                    'fused_multi_transformer_int8')
 
         # set inputs
         inputs = dict()
@@ -890,7 +890,7 @@ def fused_multi_transformer(x,
             # NOTE: inplace
             outputs['CacheKVOut'] = cache_kvs
 
-        helper.append_op(type='fused_multi_transformer',
+        helper.append_op(type='fused_multi_transformer_int8',
                          inputs=inputs,
                          outputs=outputs,
                          attrs=attrs)
