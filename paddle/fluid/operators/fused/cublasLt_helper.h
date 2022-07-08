@@ -93,7 +93,7 @@ public:
 
     void GEMM(
         int8_t* A_transform_data_dev,
-        int8_t* B_transform_data_dev,
+        const int8_t* B_transform_data_dev,
         int32_t* C_transform_data_dev,
         cudaStream_t stream) {
         cublasStatus_t status;
@@ -101,6 +101,31 @@ public:
         // PADDLE_ENFORCE_GPU_SUCCESS(cudaMalloc(&A_transform_data_dev, sizeof(int8_t) * (k_ + 32 - 1) / 32 * ldatransform_));
         // PADDLE_ENFORCE_GPU_SUCCESS(cudaMalloc(&B_transform_data_dev, sizeof(int8_t) * (k_ + 32 - 1) / 32 * ldbtransform_));
         // PADDLE_ENFORCE_GPU_SUCCESS(cudaMalloc(&C_transform_data_dev, sizeof(int32_t) * (n_ + 32 - 1) / 32 * ldctransform_));
+
+        //test using specific algo
+
+        cublasLtMatmulAlgo_t algo;
+        int algoId;
+        algoId = 6;
+        int swizzle = 0;
+        int customOption = 0;
+        int tile = 20;
+        int splitK_val = 0;
+        int reductionScheme = 0;
+        dyl::cublasLtMatmulAlgoInit(
+            handle_, CUBLAS_COMPUTE_32I, CUDA_R_32I, CUDA_R_8I, CUDA_R_8I, CUDA_R_32I, CUDA_R_32I, algoId, &algo);
+        dyl::cublasLtMatmulAlgoConfigSetAttribute(
+            &algo, CUBLASLT_ALGO_CONFIG_CUSTOM_OPTION, &(customOption), sizeof(customOption));
+        dyl::cublasLtMatmulAlgoConfigSetAttribute(&algo, CUBLASLT_ALGO_CONFIG_TILE_ID, &(tile), sizeof(tile));
+        dyl::cublasLtMatmulAlgoConfigSetAttribute(&algo, CUBLASLT_ALGO_CONFIG_SPLITK_NUM, &(splitK_val), sizeof(splitK_val));
+        dyl::cublasLtMatmulAlgoConfigSetAttribute(&algo, CUBLASLT_ALGO_CONFIG_CTA_SWIZZLING, &(swizzle), sizeof(swizzle));
+        dyl::cublasLtMatmulAlgoConfigSetAttribute(
+            &algo, CUBLASLT_ALGO_CONFIG_REDUCTION_SCHEME, &(reductionScheme), sizeof(int));
+        int stages;
+        stages = 13;
+        
+        dyl::cublasLtMatmulAlgoConfigSetAttribute(&algo, CUBLASLT_ALGO_CONFIG_STAGES_ID, &(stages), sizeof(stages));
+
 
 
         status = dyl::cublasLtMatmul(handle_,
@@ -115,7 +140,7 @@ public:
                                     C_transform_desc_,
                                     C_transform_data_dev,
                                     C_transform_desc_,
-                                    nullptr,
+                                    &algo,
                                     nullptr,
                                     0,
                                     stream);

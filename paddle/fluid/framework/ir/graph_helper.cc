@@ -552,8 +552,18 @@ static void GraphToBlock(const Graph &graph,
   std::vector<OpDesc> ops;
   GetGraphOpDesc(nodes, &ops);
   for (auto &op : ops) {
+    if (op.Type() == "fused_multi_transformer_int8") {
+      std::vector<std::string> attrs = op.AttrNames();
+      for (const std::string& attr : attrs) {
+        VLOG(1) << "attr [" << attr << "] = ";
+        if (attr == "num_head" || attr == "dim_head" || attr == "dim_ffn") {
+          VLOG(1) << BOOST_GET_CONST(int, op.GetAttr(attr));
+        }
+      }
+    }
     block->add_ops()->MergeFrom(*op.Proto());
   }
+
 }
 
 void GraphToProgram(const Graph &graph,
@@ -570,28 +580,52 @@ void GraphToProgram(const Graph &graph,
           "program must not be nullptr when converting graph to program"));
 
   proto::ProgramDesc program_pb(*(program->Proto()));
+   VLOG(1) << "program_pb->Size()" << program_pb.blocks_size();
   auto block = program_pb.mutable_blocks(kRootBlockIndex);
+   VLOG(1) << "program_pb->Size()" << program_pb.blocks_size();
   block->set_idx(kRootBlockIndex);
 
   if (FLAGS_convert_all_blocks) {
     GraphToBlock(*graph.GetSubGraph(kRootBlockIndex), block, sort_kind);
+    VLOG(1) << "kRootBlockIndex " << kRootBlockIndex;
 
     VLOG(3) << "Graph to program need convert " << graph.SubGraphsSize()
             << " sub graph";
     for (size_t idx = 0; idx < graph.SubGraphsSize(); ++idx) {
       // avoid kRootBlockIndex not 0
       if (idx == kRootBlockIndex) continue;
+       VLOG(1) << "sub graph & block id " << idx;
 
-      block = program_pb.add_blocks();
-      block->set_idx(idx);
+      // block = program_pb.add_blocks();
+      block = program_pb.mutable_blocks(idx);
+      VLOG(1) << "program_pb->Size()" << program_pb.blocks_size();
+      // block->set_idx(program_pb.blocks_size()-1);
       block->set_parent_idx(kRootBlockIndex);
       GraphToBlock(*graph.GetSubGraph(idx), block, sort_kind);
     }
   } else {
     GraphToBlock(graph, block, sort_kind);
   }
-
+  VLOG(1) << "program->Size()" << program->Size();
   program->CopyFrom(program_pb);
+  VLOG(1) << "program->Size()" << program->Size();
+  size_t block_num = program->Size();
+  for (size_t i = 0; i < block_num; i++) {
+    VLOG(1) << "Let us watch block " << i;
+    auto& b = program->Block(i);
+    auto ops = b.AllOps();
+    for (auto * op : ops) {
+      if (op->Type() == "fused_multi_transformer_int8") {
+        std::vector<std::string> attrs = op->AttrNames();
+        for (const std::string& attr : attrs) {
+          VLOG(1) << "attr [" << attr << "] = ";
+          if (attr == "num_head" || attr == "dim_head" || attr == "dim_ffn") {
+            VLOG(1) << BOOST_GET_CONST(int, op->GetAttr(attr));
+          }
+        }
+      }
+    }
+  }
 }
 
 static std::vector<std::vector<ir::Node::Dep>> GetOpDependencies(

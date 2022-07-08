@@ -142,9 +142,11 @@ class Graph {
 
   template <typename AttrType>
   AttrType &Get(const std::string &attr_name) const {
-    if (FLAGS_convert_all_blocks) {
+    // if (FLAGS_convert_all_blocks) {
+    if (true) {
       if (IsMainGraph()) {
         return GetSubGraph(0)->Get<AttrType>(attr_name);
+        
       }
     }
     PADDLE_ENFORCE_EQ(
@@ -165,9 +167,13 @@ class Graph {
 
   template <typename AttrType>
   void Set(const std::string &attr_name, AttrType *attr) {
-    if (FLAGS_convert_all_blocks) {
+    // if (FLAGS_convert_all_blocks) {
+    if (true) {
       if (IsMainGraph()) {
-        return GetSubGraph(0)->Set<AttrType>(attr_name, attr);
+        for(size_t i=0; i<SubGraphsSize(); i++) {
+          GetSubGraph(i)->Set<AttrType>(attr_name, attr);
+        }
+        return;
       }
     }
     PADDLE_ENFORCE_EQ(
@@ -176,6 +182,7 @@ class Graph {
         platform::errors::AlreadyExists(
             "The attribute %s to be set already exists in the graph.",
             attr_name));
+    VLOG(1) << "set attr " << attr_name;
     attrs_[attr_name] = attr;
     attr_dels_[attr_name] = [attr, attr_name]() {
       VLOG(3) << "deleting " << attr_name;

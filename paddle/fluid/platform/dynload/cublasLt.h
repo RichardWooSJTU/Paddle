@@ -59,7 +59,9 @@ namespace dynload {
   __macro(cublasLtMatrixTransform);              \
   __macro(cublasLtMatrixTransformDescCreate);    \
   __macro(cublasLtMatrixTransformDescDestroy);   \
-  __macro(cublasLtMatrixTransformDescSetAttribute);
+  __macro(cublasLtMatrixTransformDescSetAttribute); \
+  __macro(cublasLtMatmulAlgoInit); \
+  __macro(cublasLtMatmulAlgoConfigSetAttribute);
 
 CUBLASLT_BLAS_ROUTINE_EACH(PLATFORM_DECLARE_DYNAMIC_LOAD_CUBLASLT_WRAP)
 // #endif

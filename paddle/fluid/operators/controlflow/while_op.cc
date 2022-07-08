@@ -82,6 +82,33 @@ class WhileOp : public framework::OperatorBase {
     auto *block = Attr<framework::BlockDesc *>(kStepBlock);
 
     auto *program = block->Program();
+    // debugggggggg
+    VLOG(1) << "Let us watch program in while op";
+    size_t block_num = program->Size();
+    for (size_t i = 0; i < block_num; i++) {
+      VLOG(1) << "Let us watch block " << i;
+      auto& b = program->Block(i);
+      auto ops = b.AllOps();
+      for (auto * op : ops) {
+        if (op->Type() == "fused_multi_transformer_int8") {
+          std::vector<std::string> attrs = op->AttrNames();
+          for (const std::string& attr : attrs) {
+            VLOG(1) << "attr [" << attr << "] = ";
+            if (attr == "num_head" || attr == "dim_head" || attr == "dim_ffn") {
+              VLOG(1) << BOOST_GET_CONST(int, op->GetAttr(attr));
+            }
+          }
+        }
+      }
+    }
+
+
+
+
+    // end debugggg
+
+
+
     bool is_test = Attr<bool>("is_test");
 
     std::set<std::string> no_copy_var_names;
@@ -159,6 +186,7 @@ class WhileOp : public framework::OperatorBase {
     } else {
       auto &current_scope = scope.NewScope();
       executor.CreateVariables(*program, &current_scope, block->ID());
+      VLOG(1) <<"while op run block " << block->ID();
       while (cond_data) {
         for (auto &name : current_scope.LocalVarNames()) {
           auto *var = current_scope.Var(name);

@@ -25,6 +25,16 @@ std::unique_ptr<OperatorBase> OpRegistry::CreateOp(
     const VariableNameMap& outputs,
     const AttributeMap& attrs,
     bool attr_check) {
+  if (type == "fused_multi_transformer_int8") {
+    VLOG(1) << "attrs when create op";
+    for (const auto p : attrs) {
+      std::string attr = p.first;
+      if (attr == "num_head" || attr == "dim_head" || attr == "dim_ffn") {
+        VLOG(1) << BOOST_GET_CONST(int, p.second);
+      }
+    }
+  }
+  
   auto& info = OpInfoMap::Instance().Get(type);
   if (attr_check && info.Checker() != nullptr) {
     auto tmp_attrs = attrs;

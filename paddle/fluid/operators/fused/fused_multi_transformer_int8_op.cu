@@ -1124,9 +1124,14 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     auto qkv_weights = ctx.MultiInput<Tensor>("QKVW");
     auto qkv_biases = ctx.MultiInput<Tensor>("QKVBias");
     const bool trans_qkvw = ctx.Attr<bool>("trans_qkvw");
-    const auto qkv_w_dims = qkv_weights[0]->dims();
-    int num_head = trans_qkvw ? qkv_w_dims[1] : qkv_w_dims[2];
-    int dim_head = trans_qkvw ? qkv_w_dims[2] : qkv_w_dims[3];
+    // const auto qkv_w_dims = qkv_weights[0]->dims();
+    // int num_head = trans_qkvw ? qkv_w_dims[1] : qkv_w_dims[2];
+    // int dim_head = trans_qkvw ? qkv_w_dims[2] : qkv_w_dims[3];
+    int num_head = ctx.Attr<int>("num_head");
+    VLOG(1) << "num_head" << num_head;
+    int dim_head = ctx.Attr<int>("dim_head");
+    VLOG(1) << "dim_head" << dim_head;
+    
     int hidden_size = num_head * dim_head;
     int output_size = 3 * hidden_size;
     int input_size = dim_embed;
@@ -1224,9 +1229,12 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     // 6. ffn matmul1
     auto ffn1_weights = ctx.MultiInput<Tensor>("FFN1Weight");
     auto ffn1_biases = ctx.MultiInput<Tensor>("FFN1Bias");
-    auto ffn1_weight_dim = ffn1_weights[0]->dims();
+    // auto ffn1_weight_dim = ffn1_weights[0]->dims();
 
-    int dim_ffn = ffn1_weight_dim[1];
+    // int dim_ffn = ffn1_weight_dim[1];
+
+    int dim_ffn = ctx.Attr<int>("dim_ffn");
+    VLOG(1) << "dim_ffn" << dim_ffn;
     AttnMatmulINT8<T> ffn1_linear_compute(
         dev_ctx, bsz_seq, dim_ffn, dim_embed, false, ffn1_weights, place);
     Tensor ffn1_out;
@@ -1254,13 +1262,11 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
         dev_ctx, bsz_seq, dim_embed, ffn2_dropout_param, epsilon);
 
     // []. init workspace for cublasLt transform
-    Tensor weights_workspace, input_workspace, output_workspace;
+    Tensor input_workspace, output_workspace;
     // for input and output transform data is CUBLASLT_ORDER_COL32 format,
-    int m_max = bsz_seq, k_max = input_size, n_max = output_size;
+    int m_max = bsz_seq, k_max = std::max(dim_embed, dim_ffn), n_max = std::max({output_size, dim_embed, dim_ffn});
     input_workspace.mutable_data<int8_t>({m_max, (k_max+31)/32*32}, place);
     output_workspace.mutable_data<int32_t>({m_max, (n_max+31)/32*32}, place);
-    // for weights transform data is  CUBLASLT_ORDER_COL4_4R2_8C
-    weights_workspace.mutable_data<int8_t>({((n_max + 8 - 1) / 8) * 8, (k_max+31)/32*32}, place);
 
     // calc
     auto *out = ctx.Output<Tensor>("Out");
@@ -1314,7 +1320,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
       // NOTE: in decoder stage, bias is fused in fmha
       const Tensor *bias = time_step ? nullptr : qkv_bias;
       qkv_compute.ComputeForward(
-          qkv_weights[i], &weights_workspace, buf1, &input_workspace, bias, &qkv_out, &output_workspace, &qkv_out);
+          qkv_weights[i], buf1, &input_workspace, bias, &qkv_out, &output_workspace, &qkv_out);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step2";
 #endif
@@ -1401,7 +1407,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 
       // step4. out_linear
       out_linear_compute.ComputeForward(
-          out_linear_weights[i], &weights_workspace, &fmha_out, &input_workspace, nullptr,  buf1, &output_workspace,nullptr);
+          out_linear_weights[i], &fmha_out, &input_workspace, nullptr,  buf1, &output_workspace,nullptr);
       AllReduce<T>(*buf1, ring_id, dev_ctx);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step4";
@@ -1434,7 +1440,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 
       // step6. ffn matmul1
       ffn1_linear_compute.ComputeForward(
-          ffn1_weights[i], &weights_workspace,  buf1, &input_workspace, nullptr, &ffn1_out, &output_workspace, nullptr);
+          ffn1_weights[i],  buf1, &input_workspace, nullptr, &ffn1_out, &output_workspace, nullptr);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step6";
 #endif
@@ -1453,7 +1459,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 
       // step8. ffn matmul2
       ffn2_linear_compute.ComputeForward(
-          ffn2_weights[i], &weights_workspace,  &ffn1_dropout_out, &input_workspace, nullptr, buf1, &output_workspace, nullptr);
+          ffn2_weights[i],  &ffn1_dropout_out, &input_workspace, nullptr, buf1, &output_workspace, nullptr);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step8.0";
 #endif
