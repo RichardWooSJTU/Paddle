@@ -142,8 +142,7 @@ class Graph {
 
   template <typename AttrType>
   AttrType &Get(const std::string &attr_name) const {
-    // if (FLAGS_convert_all_blocks) {
-    if (true) {
+    if (FLAGS_convert_all_blocks) {
       if (IsMainGraph()) {
         return GetSubGraph(0)->Get<AttrType>(attr_name);
         
@@ -167,8 +166,7 @@ class Graph {
 
   template <typename AttrType>
   void Set(const std::string &attr_name, AttrType *attr) {
-    // if (FLAGS_convert_all_blocks) {
-    if (true) {
+    if (FLAGS_convert_all_blocks) {
       if (IsMainGraph()) {
         for(size_t i=0; i<SubGraphsSize(); i++) {
           GetSubGraph(i)->Set<AttrType>(attr_name, attr);
@@ -185,8 +183,12 @@ class Graph {
     VLOG(1) << "set attr " << attr_name;
     attrs_[attr_name] = attr;
     attr_dels_[attr_name] = [attr, attr_name]() {
-      VLOG(3) << "deleting " << attr_name;
-      delete attr;
+      if (attr) {
+        VLOG(3) << "deleting " << attr_name;
+        auto* attr_nonconst = const_cast<AttrType *>(attr);
+        delete attr_nonconst;
+        attr_nonconst = nullptr;
+      }
     };
   }
 

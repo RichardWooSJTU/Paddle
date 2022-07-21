@@ -1150,6 +1150,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     Tensor qkv_out;
     auto *qkv_out_data =
         qkv_out.mutable_data<T>({bsz, seq_len, 3, num_head, dim_head}, place);
+    VLOG(1) << "multihead_attention " << "m=" << bsz_seq << "k=" << input_size << "n=" << output_size;
 
     // 3. fmha
     AttnDropoutParam attn_param(
@@ -1212,6 +1213,8 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     // (transA, transB, compute_bias) = (false, false, false)
     AttnMatmulINT8<T> out_linear_compute(
         dev_ctx, bsz_seq, dim_embed, hidden_size, false, out_linear_weights, place);
+    
+    VLOG(1) << "out_linear " << "m=" << bsz_seq << "k=" << hidden_size << "n=" << dim_embed;
 
     // 5. ln(residual + bias)
     DropoutParam dropout_param2(true, 0, true, true, 0.0, nullptr, 0);
@@ -1237,6 +1240,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     VLOG(1) << "dim_ffn" << dim_ffn;
     AttnMatmulINT8<T> ffn1_linear_compute(
         dev_ctx, bsz_seq, dim_ffn, dim_embed, false, ffn1_weights, place);
+    VLOG(1) << "ffn1 " << "m=" << bsz_seq << "k=" << dim_embed << "n=" << dim_ffn;
     Tensor ffn1_out;
     auto *ffn1_out_data = ffn1_out.mutable_data<T>({bsz_seq, dim_ffn}, place);
 
@@ -1254,7 +1258,8 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     auto ffn2_weights = ctx.MultiInput<Tensor>("FFN2Weight");
     auto ffn2_biases = ctx.MultiInput<Tensor>("FFN2Bias");
     AttnMatmulINT8<T> ffn2_linear_compute(
-        dev_ctx, bsz_seq, dim_embed, dim_ffn, false, ffn2_weights, place);
+        dev_ctx, bsz_seq, dim_embed, dim_ffn, false, ffn2_weights, place, true);
+    VLOG(1) << "ffn2 " << "m=" << bsz_seq << "k=" << dim_ffn << "n=" << dim_embed;
 
     // 9. ffn2 residual bias
     DropoutParam ffn2_dropout_param(true, 0, true, true, 0.0, nullptr, 0);

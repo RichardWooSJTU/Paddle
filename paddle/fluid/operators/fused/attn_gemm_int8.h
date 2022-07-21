@@ -121,13 +121,13 @@ public:
              int input_size,
              bool compute_bias,
              const std::vector<const framework::Tensor*> weight_cts,
-             const platform::Place& place)
+             const platform::Place& place,
+             bool is_ffn2=false)
         :dev_ctx_(dev_ctx),
         bsz_seq_(bsz_seq),
         output_size_(output_size),
         input_size_(input_size),
         compute_bias_(compute_bias) {
-            
         helper_ = std::make_unique<CublasLtHelper>(bsz_seq, input_size, output_size);
 
         //quantize and transpose weight
