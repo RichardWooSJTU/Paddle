@@ -49,10 +49,10 @@ __global__ void row_major_to_col32_quantize_kernel(const T* input,
     bool check = ((m_id < m) && (n_id < n));
     if (check) {
         char4 tmp;
-        tmp.x = __float2int_rn(static_cast<float>(__ldg(input + m_id * n + n_id) * 1.0));
-        tmp.y = __float2int_rn(static_cast<float>(__ldg(input + m_id * n + n_id+1) * 1.0));
-        tmp.z = __float2int_rn(static_cast<float>(__ldg(input + m_id * n + n_id+2) * 1.0));
-        tmp.w = __float2int_rn(static_cast<float>(__ldg(input + m_id * n + n_id+3) * 1.0));
+        tmp.x = __float2int_rn(static_cast<float>(input[m_id * n + n_id]) * 1.0);
+        tmp.y = __float2int_rn(static_cast<float>(input[m_id * n + n_id+1]) * 1.0);
+        tmp.z = __float2int_rn(static_cast<float>(input[m_id * n + n_id+2]) * 1.0);
+        tmp.w = __float2int_rn(static_cast<float>(input[m_id * n + n_id+3]) * 1.0);
         // COL32_col = n_id >> 5 ; COL32_row = (m_id << 5) + (n_id & 31)
         // COL32_idx = (COL32_col << 5) * m + COL32_row = (n_id & 0xffffffe0)*m + (m_id << 5) + (n_id & 31)
         output[((n_id & 0xffffffe0) * m + (m_id << 5) + (n_id & 31)) >> 2] = tmp;
@@ -93,7 +93,7 @@ __global__ void col32_to_row_major_dequantize_kernel(T* output,
     // int tmp = m_id * n + n_id;
     // printf("%d, %d, %d, %d\n", m_id, m, n_id, n);
     output[n_id * m + m_id] =
-        ((T)(input[(m_id & 0xffffffe0) * n + (n_id << 5) + (m_id & 31)]) *
+        static_cast<T>(static_cast<float>(input[(m_id & 0xffffffe0) * n + (n_id << 5) + (m_id & 31)]) *
             1.0 / max_range * 1.0 / max_range);
   }
 }

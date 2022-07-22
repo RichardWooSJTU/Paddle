@@ -1518,5 +1518,5 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 namespace ops = paddle::operators;
 namespace plat = paddle::platform;
 REGISTER_OP_CUDA_KERNEL(fused_multi_transformer_int8,
-                        // ops::FusedMultiTransformerINT8OpKernel<plat::float16>,
+                        ops::FusedMultiTransformerINT8OpKernel<plat::float16>,
                         ops::FusedMultiTransformerINT8OpKernel<float>);
