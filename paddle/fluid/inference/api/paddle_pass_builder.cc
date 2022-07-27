@@ -136,7 +136,7 @@ const std::vector<std::string> kTRTSubgraphPasses({
 
 const std::vector<std::string> kDlnneSubgraphPasses({
     "is_test_pass",                  //
-    "delete_dropout_op_pass"         //
+    "delete_dropout_op_pass",        //
     "simplify_with_basic_ops_pass",  //
     "conv_bn_fuse_pass",             //
     "depthwise_conv_bn_fuse_pass",   //
@@ -156,11 +156,24 @@ const std::vector<std::string> kLiteSubgraphPasses({
 const std::vector<std::string> kGpuLowerPrecisionPasses{
     // "conv_bn_fuse_pass",
     // "conv_eltwiseadd_bn_fuse_pass",
-    "multi_transformer_fuse_pass"
+    "multi_transformer_fuse_pass",
+    // "conv_bn_fuse_pass",
+    // "conv_eltwiseadd_bn_fuse_pass",
+    // "conv_elementwise_add_act_fuse_pass",
+    // "conv_elementwise_add2_act_fuse_pass",
+    // "conv_elementwise_add_fuse_pass",
+    // "gpu_cpu_map_matmul_v2_to_mul_pass",     //
+    // "gpu_cpu_map_matmul_v2_to_matmul_pass",  //
+    // "fc_fuse_pass"};
 };
+
 const std::vector<std::string> kTrtLowerPrecisionPasses{
     // "conv_bn_fuse_pass",
     // "conv_eltwiseadd_bn_fuse_pass",
+    "trt_map_matmul_v2_to_mul_pass",
+    "trt_map_matmul_v2_to_matmul_pass",
+    "trt_map_matmul_to_mul_pass",
+    "fc_fuse_pass",
     "tensorrt_subgraph_pass",
 };
 
@@ -300,6 +313,7 @@ void CpuPassStrategy::EnableMKLDNN() {
              "softplus_activation_mkldnn_fuse_pass",  //
              "shuffle_channel_mkldnn_detect_pass",    //
              "elt_act_mkldnn_fuse_pass",              //
+             "matmul_activation_mkldnn_fuse_pass",    //
              // TODO(intel): Please fix the bug on windows.
              // https://github.com/PaddlePaddle/Paddle/issues/29710
              // "mkldnn_inplace_pass",  // This pass should be activated after
