@@ -44,6 +44,8 @@ using Tensor = framework::Tensor;
 
 // for debug
 // #define _DEBUG_FUSED_MULTI_TRANSFORMER
+#define _DEBUG_TIME
+
 
 template <typename T>
 static void AllReduce(framework::Tensor &tensor,  // NOLINT
@@ -1087,6 +1089,11 @@ void write_cache_kv(const platform::CUDADeviceContext &dev_ctx,
 
 }  // namespace
 
+inline static double diffTime(timeval start, timeval end)
+{
+    return (end.tv_sec - start.tv_sec) * 1000 + (end.tv_usec - start.tv_usec) * 0.001;
+}
+
 template <typename T>
 class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
  public:
@@ -1098,6 +1105,14 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     auto &dev_ctx = ctx.cuda_device_context();
 
     auto *time_step = ctx.Input<Tensor>("TimeStep");
+
+    const cudaStream_t* c_streams = dev_ctx.streams();  
+    cudaStream_t* streams = const_cast<cudaStream_t*>(c_streams);
+    static cudaEvent_t stream_events[5];
+    if (!stream_events[0]) {
+      for (int i = 0; i < 5; ++i)
+        cudaEventCreate(&stream_events[i]);
+    }
     
     // 0. input
     auto *input_x = ctx.Input<Tensor>("X");
@@ -1111,6 +1126,14 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     const auto pre_layer_norm = ctx.Attr<bool>("pre_layer_norm");
     const float epsilon = ctx.Attr<float>("epsilon");
     auto ln_scales = ctx.MultiInput<Tensor>("LnScale");
+    //debuggg
+    VLOG(1) << "ln_scales dtype " << ln_scales[0]->dtype();
+    if (std::is_same<T, float>::value) {
+      VLOG(1) << "run with float";
+    } else {
+      VLOG(1) << "run with fp16";
+    }
+    //debuggg end
     auto ln_biases = ctx.MultiInput<Tensor>("LnBias");
 
     auto ln_compute = AttnLayerNorm<T>(dev_ctx, epsilon, bsz_seq, dim_embed);
@@ -1140,17 +1163,31 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 
     bool compute_bias = qkv_biases.size() > 0 && time_step == nullptr;
     // (transA, transB, compute_bias) = (false, trans_qkvw, false)
+
+#ifdef TRANSPOSE_GEMM
+    VLOG(1) << "#define TRANSPOSE_GEMM";
     AttnMatmulINT8<T> qkv_compute(dev_ctx,
-                                     bsz_seq,
                                      output_size,
+                                     bsz_seq,
                                      input_size,
-                                     compute_bias,
+                                    //  compute_bias,
+                                    false,
                                      qkv_weights,
                                     place);
+#else
+    VLOG(1) << "NOT #define TRANSPOSE_GEMM";
+    AttnMatmulINT8<T> qkv_compute(dev_ctx,
+      bsz_seq,
+      output_size,
+      input_size,
+      compute_bias,
+      qkv_weights,
+     place);
+#endif
     Tensor qkv_out;
     auto *qkv_out_data =
         qkv_out.mutable_data<T>({bsz, seq_len, 3, num_head, dim_head}, place);
-    VLOG(1) << "multihead_attention " << "m=" << bsz_seq << "k=" << input_size << "n=" << output_size;
+    // VLOG(1) << "multihead_attention " << "m=" << bsz_seq << "k=" << input_size << "n=" << output_size;
 
     // 3. fmha
     AttnDropoutParam attn_param(
@@ -1211,10 +1248,15 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     auto out_linear_biases = ctx.MultiInput<Tensor>("OutLinearBias");
     int ring_id = ctx.Attr<int>("ring_id");
     // (transA, transB, compute_bias) = (false, false, false)
+#ifdef TRANSPOSE_GEMM
     AttnMatmulINT8<T> out_linear_compute(
-        dev_ctx, bsz_seq, dim_embed, hidden_size, false, out_linear_weights, place);
+        dev_ctx,  dim_embed, bsz_seq, hidden_size, false, out_linear_weights, place);
+#else
+    AttnMatmulINT8<T> out_linear_compute(
+      dev_ctx, bsz_seq, dim_embed,  hidden_size, false, out_linear_weights, place);
+#endif
     
-    VLOG(1) << "out_linear " << "m=" << bsz_seq << "k=" << hidden_size << "n=" << dim_embed;
+    // VLOG(1) << "out_linear " << "m=" << bsz_seq << "k=" << hidden_size << "n=" << dim_embed;
 
     // 5. ln(residual + bias)
     DropoutParam dropout_param2(true, 0, true, true, 0.0, nullptr, 0);
@@ -1238,9 +1280,15 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 
     int dim_ffn = ctx.Attr<int>("dim_ffn");
     VLOG(1) << "dim_ffn" << dim_ffn;
+
+#ifdef TRANSPOSE_GEMM
     AttnMatmulINT8<T> ffn1_linear_compute(
-        dev_ctx, bsz_seq, dim_ffn, dim_embed, false, ffn1_weights, place);
-    VLOG(1) << "ffn1 " << "m=" << bsz_seq << "k=" << dim_embed << "n=" << dim_ffn;
+        dev_ctx, dim_ffn, bsz_seq,  dim_embed, false, ffn1_weights, place);
+#else
+    AttnMatmulINT8<T> ffn1_linear_compute(
+           dev_ctx, bsz_seq,  dim_ffn, dim_embed, false, ffn1_weights, place);
+#endif
+    // VLOG(1) << "ffn1 " << "m=" << bsz_seq << "k=" << dim_embed << "n=" << dim_ffn;
     Tensor ffn1_out;
     auto *ffn1_out_data = ffn1_out.mutable_data<T>({bsz_seq, dim_ffn}, place);
 
@@ -1257,9 +1305,14 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     // 8. ffn2 matmul
     auto ffn2_weights = ctx.MultiInput<Tensor>("FFN2Weight");
     auto ffn2_biases = ctx.MultiInput<Tensor>("FFN2Bias");
+#ifdef TRANSPOSE_GEMM
     AttnMatmulINT8<T> ffn2_linear_compute(
-        dev_ctx, bsz_seq, dim_embed, dim_ffn, false, ffn2_weights, place, true);
-    VLOG(1) << "ffn2 " << "m=" << bsz_seq << "k=" << dim_ffn << "n=" << dim_embed;
+        dev_ctx, dim_embed, bsz_seq, dim_ffn, false, ffn2_weights, place, true);
+#else
+    AttnMatmulINT8<T> ffn2_linear_compute(
+      dev_ctx, bsz_seq, dim_embed, dim_ffn, false, ffn2_weights, place, true);
+#endif
+    // VLOG(1) << "ffn2 " << "m=" << bsz_seq << "k=" << dim_ffn << "n=" << dim_embed;
 
     // 9. ffn2 residual bias
     DropoutParam ffn2_dropout_param(true, 0, true, true, 0.0, nullptr, 0);
@@ -1270,8 +1323,18 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     Tensor input_workspace, output_workspace;
     // for input and output transform data is CUBLASLT_ORDER_COL32 format,
     int m_max = bsz_seq, k_max = std::max(dim_embed, dim_ffn), n_max = std::max({output_size, dim_embed, dim_ffn});
+#ifdef TRANSPOSE_GEMM
+    int tmp = m_max;
+    m_max = n_max;
+    n_max = tmp;
+    k_max = 4096;
+#endif
     input_workspace.mutable_data<int8_t>({m_max, (k_max+31)/32*32}, place);
-    output_workspace.mutable_data<int32_t>({m_max, (n_max+31)/32*32}, place);
+    output_workspace.mutable_data<int32_t>({m_max * 4, (n_max+31)/32*32* 4} , place);
+
+    //debugggg
+    Tensor weight_tmp;
+    weight_tmp.mutable_data<int8_t>({n_max, (k_max+31)/32*32}, place);
 
     // calc
     auto *out = ctx.Output<Tensor>("Out");
@@ -1301,7 +1364,13 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     }
 
     for (int i = 0; i < layers; ++i) {
+      VLOG(1) << "LAYER " << i;
+#ifdef _DEBUG_TIME
+      std::cout << "LAYER " << i << std::endl;
       // step1. layer_norm
+      struct timeval start, end;
+      gettimeofday(&start, NULL);
+#endif
       if (i == 0 && pre_layer_norm) {
         auto *ln_scale_data = ln_scales[i]->data<U>();
         auto *ln_bias_data = ln_biases[i]->data<U>();
@@ -1317,17 +1386,33 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
             "Unimplemented post_layer_norm for now."));
       }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
-      VLOG(0) << "step1";
+      VLOG(1) << "step1";
+#endif
+#ifdef _DEBUG_TIME
+    cudaDeviceSynchronize();
+    gettimeofday(&end, NULL);
+    float time = diffTime(start, end);
+    std::cout << "step1 layer_norm spend " << time << " ms "<< std::endl;
+    gettimeofday(&start, NULL);
 #endif
 
       // step2. qkv
       const Tensor *qkv_bias = qkv_biases.size() > 0 ? qkv_biases[i] : nullptr;
       // NOTE: in decoder stage, bias is fused in fmha
       const Tensor *bias = time_step ? nullptr : qkv_bias;
+      // qkv_compute.ComputeForward(
+      //     qkv_weights[i], buf1, &input_workspace, bias, &qkv_out, &output_workspace, &qkv_out);
       qkv_compute.ComputeForward(
-          qkv_weights[i], buf1, &input_workspace, bias, &qkv_out, &output_workspace, &qkv_out);
+            &weight_tmp, buf1, &input_workspace, bias, &qkv_out, &output_workspace, &qkv_out, streams, stream_events);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
-      VLOG(0) << "step2";
+      VLOG(1) << "step2";
+#endif
+#ifdef _DEBUG_TIME
+cudaDeviceSynchronize();
+    gettimeofday(&end, NULL);
+    time = diffTime(start, end);
+    std::cout << "step2 qkv spend " << time << " ms "<< std::endl;
+    gettimeofday(&start, NULL);
 #endif
 
       // step3. fmha
@@ -1407,15 +1492,30 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
                                     &fmha_out);
       }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
-      VLOG(0) << "step3";
+      VLOG(1) << "step3";
+#endif
+#ifdef _DEBUG_TIME
+cudaDeviceSynchronize();
+    gettimeofday(&end, NULL);
+    time = diffTime(start, end);
+    std::cout << "step3 fmha spend " << time << " ms "<< std::endl;
+    gettimeofday(&start, NULL);
 #endif
 
       // step4. out_linear
       out_linear_compute.ComputeForward(
-          out_linear_weights[i], &fmha_out, &input_workspace, nullptr,  buf1, &output_workspace,nullptr);
+          // out_linear_weights[i], &fmha_out, &input_workspace, nullptr,  buf1, &output_workspace,nullptr);
+          &weight_tmp, &fmha_out, &input_workspace, nullptr,  buf1, &output_workspace,nullptr, streams, stream_events);
       AllReduce<T>(*buf1, ring_id, dev_ctx);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
-      VLOG(0) << "step4";
+      VLOG(1) << "step4";
+#endif
+#ifdef _DEBUG_TIME
+cudaDeviceSynchronize();
+    gettimeofday(&end, NULL);
+    time = diffTime(start, end);
+    std::cout << "step4 out_linear spend " << time << " ms "<< std::endl;
+    gettimeofday(&start, NULL);
 #endif
 
       // step5. ln(residual + dropout(input + bias))
@@ -1440,16 +1540,30 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
       } else {
       }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
-      VLOG(0) << "step5";
+      VLOG(1) << "step5";
+#endif
+#ifdef _DEBUG_TIME
+cudaDeviceSynchronize();
+    gettimeofday(&end, NULL);
+    time = diffTime(start, end);
+    std::cout << "step5 ln spend " << time << " ms "<< std::endl;
+    gettimeofday(&start, NULL);
 #endif
 
       // step6. ffn matmul1
       ffn1_linear_compute.ComputeForward(
-          ffn1_weights[i],  buf1, &input_workspace, nullptr, &ffn1_out, &output_workspace, nullptr);
+          // ffn1_weights[i],  buf1, &input_workspace, nullptr, &ffn1_out, &output_workspace, nullptr);
+          &weight_tmp,  buf1, &input_workspace, nullptr, &ffn1_out, &output_workspace, nullptr, streams, stream_events);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
-      VLOG(0) << "step6";
+      VLOG(1) << "step6";
 #endif
-
+#ifdef _DEBUG_TIME
+cudaDeviceSynchronize();
+    gettimeofday(&end, NULL);
+    time = diffTime(start, end);
+    std::cout << "step6 ffn1 spend " << time << " ms "<< std::endl;
+    gettimeofday(&start, NULL);
+#endif
       // step7. act bias
       // TODO(wangxi): remove dropout mask in inference
       fused_act_dropout_helper.DropoutActBias(dev_ctx,
@@ -1459,19 +1573,34 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
                                               ffn1_dropout_out_data,
                                               ffn1_dropout_mask_data);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
-      VLOG(0) << "step7";
+      VLOG(1) << "step7";
+#endif
+#ifdef _DEBUG_TIME
+cudaDeviceSynchronize();
+    gettimeofday(&end, NULL);
+    time = diffTime(start, end);
+    std::cout << "step7 act bias spend " << time << " ms "<< std::endl;
+    gettimeofday(&start, NULL);
 #endif
 
       // step8. ffn matmul2
       ffn2_linear_compute.ComputeForward(
-          ffn2_weights[i],  &ffn1_dropout_out, &input_workspace, nullptr, buf1, &output_workspace, nullptr);
+          // ffn2_weights[i],  &ffn1_dropout_out, &input_workspace, nullptr, buf1, &output_workspace, nullptr);
+          &weight_tmp,  &ffn1_dropout_out, &input_workspace, nullptr, buf1, &output_workspace, nullptr, streams, stream_events);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
-      VLOG(0) << "step8.0";
+      VLOG(1) << "step8.0";
 #endif
 
       AllReduce<T>(*buf1, ring_id, dev_ctx);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
-      VLOG(0) << "step8.1";
+      VLOG(1) << "step8.1";
+#endif
+#ifdef _DEBUG_TIME
+cudaDeviceSynchronize();
+    gettimeofday(&end, NULL);
+    time = diffTime(start, end);
+    std::cout << "step8 ffn matmul2 spend " << time << " ms "<< std::endl;
+    gettimeofday(&start, NULL);
 #endif
 
       // step9. residual bias
@@ -1504,7 +1633,13 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
       } else {
       }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
-      VLOG(0) << "step9";
+      VLOG(1) << "step9";
+#endif
+#ifdef _DEBUG_TIME
+cudaDeviceSynchronize();
+    gettimeofday(&end, NULL);
+    time = diffTime(start, end);
+    std::cout << "step9 residual bias spend " << time << " ms "<< std::endl;
 #endif
       x_data = buf1->data<T>();
       std::swap(buf0, buf1);

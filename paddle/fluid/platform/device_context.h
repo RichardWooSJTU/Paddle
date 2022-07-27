@@ -599,6 +599,7 @@ class CUDADeviceContext : public phi::GPUContext {
 
   /*! \brief  Return cuda stream in the device context. */
   gpuStream_t stream() const;
+  const cudaStream_t* streams() const;
 
   void RecordEvent(gpuEvent_t ev, const std::function<void()>& callback) const;
 
@@ -636,6 +637,8 @@ class CUDADeviceContext : public phi::GPUContext {
   // NOTE: Just for compatibility with the past, please delete if there is an
   // elegant way.
   std::unique_ptr<stream::CUDAStream> cuda_stream_;
+
+  std::vector<cudaStream_t> streams_;
 
   DISABLE_COPY_AND_ASSIGN(CUDADeviceContext);
 };

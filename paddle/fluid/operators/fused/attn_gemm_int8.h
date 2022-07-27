@@ -12,9 +12,11 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License. */
 
+#include "paddle/fluid/platform/device/gpu/gpu_info.h"
 #include "paddle/fluid/operators/fused/cublasLt_helper.h"
 #include "paddle/fluid/platform/float16.h"
 
+#define TRANSPOSE_GEMM
 
 namespace paddle {
 namespace operators {
@@ -111,24 +113,53 @@ void col32_to_row_major_dequantize_kernelLauncher(const int32_t* input,
       output, input, hidden_units, batch_size, 127.0f);
 }
 
+
+__global__ void reduce(int32_t* data, const int m, const int n, const int num_streams) {
+    int num_threads = m * n * num_streams;
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    int stride = blockDim.x * gridDim.x;
+    int num_items = (m * n);
+    int stream = tid / num_items;
+    if (stream == 0) return;
+    int item = tid % num_items;
+
+    for (; tid < num_threads; tid += stride) {
+        atomicAdd(&data[item], data[tid]);
+    }
+}
+
 template <typename T>
 class AttnMatmulINT8 {
 public:
     AttnMatmulINT8(
             const platform::CUDADeviceContext& dev_ctx,
-             int bsz_seq,
-             int output_size,
-             int input_size,
+             int m,
+             int n,
+             int k,
              bool compute_bias,
              const std::vector<const framework::Tensor*> weight_cts,
              const platform::Place& place,
              bool is_ffn2=false)
         :dev_ctx_(dev_ctx),
-        bsz_seq_(bsz_seq),
-        output_size_(output_size),
-        input_size_(input_size),
+        m_(m),
+        n_(n),
+        k_(k),
         compute_bias_(compute_bias) {
-        helper_ = std::make_unique<CublasLtHelper>(bsz_seq, input_size, output_size);
+#ifdef TRANSPOSE_GEMM
+        if (k_ == 4 * m_ && k_ == 16384) {
+#else
+        if (k_ == 4 * n_ && k_ == 16384) {
+#endif
+        // if (false) {
+            // Use multi stream calculation
+            for (int i = 0; i < 4; ++i) {
+                auto helper = std::make_shared<CublasLtHelper>(m, k / 4, n);
+                helpers_.emplace_back(helper);
+            }
+        } else {
+            auto helper = std::make_shared<CublasLtHelper>(m, k, n);
+            helpers_.emplace_back(helper);
+        }
 
         //quantize and transpose weight
         // for (const framework::Tensor* weight_ct : weight_cts) {
@@ -136,7 +167,7 @@ public:
         //     framework::Tensor* weight_t = const_cast<framework::Tensor*>(weight_ct);
         //     framework::TensorCopy(*weight_t, place, &weight_tmp);
 
-        //     weight_t->Resize({input_size*output_size});
+        //     weight_t->Resize({k*n});
         //     weight_t->mutable_data<int8_t>(place);
             
         //     VLOG(1) << "[DEBUG] TransformB";
@@ -150,28 +181,72 @@ public:
                         const framework::Tensor* bias, //[fp16/32] 
                         framework::Tensor* output, // [fp16/32] has been dequantized/detranspose/detranbsform
                         framework::Tensor* output_tmp, //[int32]  workspace
-                        framework::Tensor* bias_out){
+                        framework::Tensor* bias_out,
+                        cudaStream_t* streams,
+                        cudaEvent_t* stream_events){
+        int m = m_, k = k_, n = n_;
         //quant transpose A
         float scale = 1.0f;
         VLOG(1) << "[DEBUG] row_major_to_col32_quantize_kernelLauncher";
         row_major_to_col32_quantize_kernelLauncher<T>(input->data<T>(), 
                                                       input_tmp->data<int8_t>(), 
-                                                      bsz_seq_, input_size_, 
+#ifdef TRANSPOSE_GEMM
+                                                        n_, k_,
+#else
+                                                        m_, k_, 
+#endif
+                                                      
                                                       dev_ctx_.stream());
 
         VLOG(1) << "[DEBUG] GEMM";
-        VLOG(1) << "input_tmp " << input_tmp->numel();
-        VLOG(1) << "weight_tmp " << weight->numel();
-        VLOG(1) << "output_tmp " << output_tmp->numel();
+        VLOG(1) << "input_tmp " << input_tmp->numel() << " dtype " << input_tmp->dtype();
+        VLOG(1) << "weight_tmp " << weight->numel() << " dtype " << weight->dtype();
+        VLOG(1) << "output_tmp " << output_tmp->numel() << " dtype " << output_tmp->dtype();
+#ifdef TRANSPOSE_GEMM
+        if (k_ == 4 * m_ && k_ == 16384) {
+#else
+        if (k_ == 4 * n_ && k_ == 16384) {
+#endif
+        // if (false) {
+            // Synchronize stream
+            // PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(stream_events[0], dev_ctx_.stream()));
+            PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
+           
+            // Use multi stream calculation
+            for (int i = 0; i < 4; ++i) {
+                // PADDLE_ENFORCE_GPU_SUCCESS(
+                //     cudaStreamWaitEvent(streams[i], stream_events[0], 0));
+                helpers_[i] -> GEMM(input_tmp->data<int8_t>(), weight->data<int8_t>(), output_tmp->data<int32_t>(), streams[i]);
+                // helpers_[i] -> GEMM(input_tmp->data<int8_t>(), weight->data<int8_t>(), output_tmp->data<int32_t>(), dev_ctx_.stream());
+                // PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(stream_events[i+1], streams[i]));
+            }
+            PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
+            // for (int i = 0; i < 4; ++i)
+            //     PADDLE_ENFORCE_GPU_SUCCESS(
+            //         cudaStreamWaitEvent(dev_ctx_.stream(), stream_events[i+1], 0));
+            
+            // Reduce
+            // ...
+            VLOG(1) << "REDUCE";
+            int block = 1024;
+            int grid = (m_ * n_ * 4 + block - 1) / block;
+            reduce<<<grid, block, 0, dev_ctx_.stream()>>>(output_tmp->data<int32_t>(), m_, n_, 4);
 
-        helper_ -> GEMM(input_tmp->data<int8_t>(), weight->data<int8_t>(), output_tmp->data<int32_t>(), dev_ctx_.stream());
+        } else {
+            helpers_[0] -> GEMM(input_tmp->data<int8_t>(), weight->data<int8_t>(), output_tmp->data<int32_t>(), dev_ctx_.stream());
+        }
+
+        
 
         //dequant C
         VLOG(1) << "[DEBUG] col32_to_row_major_dequantize_kernelLauncher";
         col32_to_row_major_dequantize_kernelLauncher<T>(output_tmp->data<int32_t>(), 
                                                         output->data<T>(), 
-                                                        bsz_seq_, 
-                                                        output_size_, 
+#ifdef TRANSPOSE_GEMM
+                                                        n_, m_,
+#else
+                                                        m_, n_, 
+#endif
                                                         dev_ctx_.stream());
 
         if (compute_bias_) {
@@ -188,12 +263,12 @@ public:
 private:
     const platform::CUDADeviceContext& dev_ctx_;
 
-    int bsz_seq_; // m
-    int output_size_; // n
-    int input_size_; // k
+    int m_; // m
+    int n_; // n
+    int k_; // k
 
     int compute_bias_;
-    std::unique_ptr<CublasLtHelper> helper_;
+    std::vector<std::shared_ptr<CublasLtHelper>> helpers_;
 
 };
 

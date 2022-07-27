@@ -601,6 +601,10 @@ CUDAContext::~CUDAContext() {
 CUDADeviceContext::CUDADeviceContext(CUDAPlace place) : phi::GPUContext(place) {
   phi::GPUContext::PartialInitWithoutAllocator();
   cuda_stream_.reset(new stream::CUDAStream(phi::GPUContext::stream(), place));
+  streams_.resize(4);
+  for (int i = 0; i < 4; ++i) {
+    cudaStreamCreate(&streams_[i]);
+  }
 }
 
 CUDADeviceContext::~CUDADeviceContext() = default;
@@ -711,6 +715,10 @@ gpuStream_t CUDADeviceContext::stream() const {
     return context()->RawStream();
   }
   return phi::GPUContext::stream();
+}
+
+const cudaStream_t* CUDADeviceContext::streams() const{
+  return streams_.data();
 }
 
 std::shared_ptr<CUDAContext> CUDADeviceContext::context() const {

@@ -12,6 +12,9 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License. */
 
+#include <sstream>
+#include <string>
+#include <unordered_map>
 #include "paddle/fluid/platform/dynload/cublasLt.h"
 #include "paddle/fluid/framework/tensor.h"
 
@@ -19,6 +22,53 @@ namespace dyl = paddle::platform::dynload;
 
 namespace paddle {
 namespace operators {
+
+struct AlgoParams {
+    AlgoParams(int algoId, int swizzle, int customOption, int tile, int splitK_val, int reductionScheme, int stages): algoId(algoId), swizzle(swizzle), customOption(customOption), tile(tile), splitK_val(splitK_val),
+       reductionScheme(reductionScheme), stages(stages) {}
+    int algoId;
+    int swizzle;
+    int customOption;
+    int tile;
+    int splitK_val;
+    int reductionScheme;
+    int stages;
+};
+
+const std::unordered_map<std::string, AlgoParams> AlgoMap {
+   {"1: 4096: 12288", AlgoParams( 7, 1, 0, 20, 0, 0, 15)},
+    {"1: 4096: 16384", AlgoParams( 7, 1, 0, 23, 0, 0, 15)},
+    {"1: 4096: 4096", AlgoParams( 7, 1, 0, 20, 0, 0, 15)},
+    {"1: 16384: 4096", AlgoParams( 7, 1, 0, 20, 0, 0, 15)},
+    {"1: 256: 768", AlgoParams( 7, 0, 0, 20, 0, 0, 15)},
+    {"1: 256: 1024", AlgoParams( 7, 0, 0, 20, 0, 0, 15)},
+    {"1: 1024: 256", AlgoParams( 7, 0, 0, 20, 0, 0, 15)},
+    {"1: 256: 256", AlgoParams( 7, 0, 0, 20, 0, 0, 15)},
+    {"128: 4096: 12288", AlgoParams( 7, 1, 0, 20, 0, 0, 15)},
+    {"128: 4096: 16384", AlgoParams( 7, 1, 0, 23, 0, 0, 15)},
+    {"128: 4096: 4096", AlgoParams( 7, 1, 0, 20, 0, 0, 15)},
+    {"128: 16384: 4096", AlgoParams( 7, 1, 0, 20, 0, 0, 15)},
+    {"128: 256: 768", AlgoParams( 7, 1, 0, 20, 0, 0, 15)},
+    {"128: 256: 1024", AlgoParams( 7, 1, 0, 20, 0, 0, 15)},
+    {"128: 1024: 256", AlgoParams( 7, 1, 0, 20, 0, 0, 15)},
+    {"128: 256: 256", AlgoParams( 7, 0, 0, 20, 0, 0, 15)},
+    {"12288: 4096: 1", AlgoParams( 7, 1, 0, 20, 0, 0, 15)},
+    {"16384: 4096: 1", AlgoParams( 7, 1, 0, 24, 0, 0, 15)},
+    {"4096: 4096: 1", AlgoParams( 7, 0, 0, 20, 0, 0, 15)},
+    {"4096: 16384: 1", AlgoParams( 7, 1, 0, 20, 0, 0, 15)},
+    {"768: 256: 1", AlgoParams( 7, 1, 0, 20, 0, 0, 15)},
+    {"1024: 256: 1", AlgoParams( 7, 0, 0, 20, 0, 0, 15)},
+    {"256: 1024: 1", AlgoParams( 7, 0, 0, 20, 0, 0, 15)},
+    {"256: 256: 1", AlgoParams( 7, 1, 0, 20, 0, 0, 15)},
+    {"12288: 4096: 128", AlgoParams( 7, 1, 0, 20, 0, 0, 15)},
+    {"16384: 4096: 128", AlgoParams( 7, 1, 0, 24, 0, 0, 15)},
+    {"4096: 4096: 128", AlgoParams( 7, 1, 0, 20, 0, 0, 15)},
+    {"4096: 16384: 128", AlgoParams( 7, 0, 0, 20, 0, 0, 15)},
+    {"768: 256: 128", AlgoParams( 7, 1, 0, 20, 0, 0, 15)},
+    {"1024: 256: 128", AlgoParams( 7, 0, 0, 20, 0, 0, 15)},
+    {"256: 1024: 128", AlgoParams( 7, 0, 0, 20, 0, 0, 15)},
+    {"256: 256: 128", AlgoParams( 7, 1, 0, 20, 0, 0, 15)}
+};
 
 class CublasLtHelper {
 public:
@@ -121,6 +171,7 @@ public:
         int32_t* C_transform_data_dev,
         cudaStream_t stream) {
         cublasStatus_t status;
+        VLOG(1) << "m=" << m_ << "k=" << k_ << "n=" << n_;
 
         // PADDLE_ENFORCE_GPU_SUCCESS(cudaMalloc(&A_transform_data_dev, sizeof(int8_t) * (k_ + 32 - 1) / 32 * ldatransform_));
         // PADDLE_ENFORCE_GPU_SUCCESS(cudaMalloc(&B_transform_data_dev, sizeof(int8_t) * (k_ + 32 - 1) / 32 * ldbtransform_));
@@ -140,6 +191,32 @@ public:
         int tile = 20;
         int splitK_val = 0;
         int reductionScheme = 0;
+#if CUDA_VERSION >= 11000
+        int stages;
+        if (use_4r4_) {
+            stages = 15;
+        } else {
+            stages = 13;
+        }
+#endif
+        std::stringstream ss;
+        ss << m_ << ": " << k_ << ": " << n_;
+        std::string key(ss.str());
+        if (AlgoMap.count(key) != 0) {
+            AlgoParams params = AlgoMap.at(key);
+            algoId = params.algoId;
+            swizzle = params.swizzle;
+            customOption = params.customOption;
+            tile = params.tile;
+            splitK_val = params.splitK_val;
+            reductionScheme = params.reductionScheme;
+            stages = params.stages;
+            VLOG(1) << key << " has map tile = " << tile;
+        } else {
+            VLOG(1) << key << " has no map";
+        }
+
+
         dyl::cublasLtMatmulAlgoInit(
             handle_, CUBLAS_COMPUTE_32I, CUDA_R_32I, CUDA_R_8I, CUDA_R_8I, CUDA_R_32I, CUDA_R_32I, algoId, &algo);
         dyl::cublasLtMatmulAlgoConfigSetAttribute(
@@ -150,12 +227,6 @@ public:
         dyl::cublasLtMatmulAlgoConfigSetAttribute(
             &algo, CUBLASLT_ALGO_CONFIG_REDUCTION_SCHEME, &(reductionScheme), sizeof(int));
 #if CUDA_VERSION >= 11000
-        int stages;
-        if (use_4r4_) {
-            stages = 15;
-        } else {
-            stages = 13;
-        }
         dyl::cublasLtMatmulAlgoConfigSetAttribute(&algo, CUBLASLT_ALGO_CONFIG_STAGES_ID, &(stages), sizeof(stages));
 #endif
 
@@ -177,6 +248,8 @@ public:
                                     0,
                                     stream);
         PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatmul"));
+        VLOG(1) << "gemm finsh";
+        // PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
     }
 
 private:

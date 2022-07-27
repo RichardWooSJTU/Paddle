@@ -43,6 +43,7 @@ using Tensor = framework::Tensor;
 
 // for debug
 // #define _DEBUG_FUSED_MULTI_TRANSFORMER
+#define _DEBUG_TIME
 
 template <typename T>
 static void AllReduce(framework::Tensor &tensor,  // NOLINT
@@ -1086,6 +1087,11 @@ void write_cache_kv(const platform::CUDADeviceContext &dev_ctx,
 
 }  // namespace
 
+inline static double diffTime(timeval start, timeval end)
+{
+    return (end.tv_sec - start.tv_sec) * 1000 + (end.tv_usec - start.tv_usec) * 0.001;
+}
+
 template <typename T>
 class FusedMultiTransformerOpKernel : public framework::OpKernel<T> {
  public:
@@ -1274,6 +1280,12 @@ class FusedMultiTransformerOpKernel : public framework::OpKernel<T> {
     }
 
     for (int i = 0; i < layers; ++i) {
+
+  #ifdef _DEBUG_TIME
+      std::cout << "LAYER " << i << std::endl;
+      struct timeval start, end;
+      gettimeofday(&start, NULL);
+  #endif
       // step1. layer_norm
       if (i == 0 && pre_layer_norm) {
         auto *ln_scale_data = ln_scales[i]->data<U>();
@@ -1292,6 +1304,13 @@ class FusedMultiTransformerOpKernel : public framework::OpKernel<T> {
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step1";
 #endif
+#ifdef _DEBUG_TIME
+    cudaDeviceSynchronize();
+    gettimeofday(&end, NULL);
+    float time = diffTime(start, end);
+    std::cout << "step1 layer_norm spend " << time << " ms "<< std::endl;
+    gettimeofday(&start, NULL);
+#endif
 
       // step2. qkv
       const Tensor *qkv_bias = qkv_biases.size() > 0 ? qkv_biases[i] : nullptr;
@@ -1302,7 +1321,13 @@ class FusedMultiTransformerOpKernel : public framework::OpKernel<T> {
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step2";
 #endif
-
+#ifdef _DEBUG_TIME
+    cudaDeviceSynchronize();
+    gettimeofday(&end, NULL);
+    time = diffTime(start, end);
+    std::cout << "step2 qkv spend " << time << " ms "<< std::endl;
+    gettimeofday(&start, NULL);
+#endif
       // step3. fmha
       const Tensor *cache_kv = cache_kvs.size() > 0 ? cache_kvs[i] : nullptr;
       Tensor *cache_kv_out = cache_kv ? cache_kv_outs[i] : nullptr;
@@ -1380,7 +1405,13 @@ class FusedMultiTransformerOpKernel : public framework::OpKernel<T> {
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step3";
 #endif
-
+#ifdef _DEBUG_TIME
+    cudaDeviceSynchronize();
+    gettimeofday(&end, NULL);
+    time = diffTime(start, end);
+    std::cout << "step3 fmha spend " << time << " ms "<< std::endl;
+    gettimeofday(&start, NULL);
+#endif
       // step4. out_linear
       out_linear_compute.ComputeForward(
           out_linear_weights[i], &fmha_out, nullptr, buf1, nullptr);
@@ -1388,7 +1419,13 @@ class FusedMultiTransformerOpKernel : public framework::OpKernel<T> {
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step4";
 #endif
-
+#ifdef _DEBUG_TIME
+    cudaDeviceSynchronize();
+    gettimeofday(&end, NULL);
+    time = diffTime(start, end);
+    std::cout << "step4 out_linear spend " << time << " ms "<< std::endl;
+    gettimeofday(&start, NULL);
+#endif
       // step5. ln(residual + dropout(input + bias))
       if (pre_layer_norm) {
         auto *ln_scale_data = ffn_ln_scales[i]->data<U>();
@@ -1413,14 +1450,26 @@ class FusedMultiTransformerOpKernel : public framework::OpKernel<T> {
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step5";
 #endif
-
+#ifdef _DEBUG_TIME
+    cudaDeviceSynchronize();
+    gettimeofday(&end, NULL);
+    time = diffTime(start, end);
+    std::cout << "step5 ln spend " << time << " ms "<< std::endl;
+    gettimeofday(&start, NULL);
+#endif
       // step6. ffn matmul1
       ffn1_linear_compute.ComputeForward(
           ffn1_weights[i], buf1, nullptr, &ffn1_out, nullptr);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step6";
 #endif
-
+#ifdef _DEBUG_TIME
+    cudaDeviceSynchronize();
+    gettimeofday(&end, NULL);
+    time = diffTime(start, end);
+    std::cout << "step6 ffn1 spend " << time << " ms "<< std::endl;
+    gettimeofday(&start, NULL);
+#endif
       // step7. act bias
       // TODO(wangxi): remove dropout mask in inference
       fused_act_dropout_helper.DropoutActBias(dev_ctx,
@@ -1432,7 +1481,13 @@ class FusedMultiTransformerOpKernel : public framework::OpKernel<T> {
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step7";
 #endif
-
+#ifdef _DEBUG_TIME
+    cudaDeviceSynchronize();
+    gettimeofday(&end, NULL);
+    time = diffTime(start, end);
+    std::cout << "step7 act bias spend " << time << " ms "<< std::endl;
+    gettimeofday(&start, NULL);
+#endif
       // step8. ffn matmul2
       ffn2_linear_compute.ComputeForward(
           ffn2_weights[i], &ffn1_dropout_out, nullptr, buf1, nullptr);
@@ -1444,7 +1499,13 @@ class FusedMultiTransformerOpKernel : public framework::OpKernel<T> {
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step8.1";
 #endif
-
+#ifdef _DEBUG_TIME
+    cudaDeviceSynchronize();
+    gettimeofday(&end, NULL);
+    time = diffTime(start, end);
+    std::cout << "step8 ffn matmul2 spend " << time << " ms "<< std::endl;
+    gettimeofday(&start, NULL);
+#endif
       // step9. residual bias
       if (pre_layer_norm) {
         // TODO(wangxi): remove dropout mask in inference
@@ -1476,6 +1537,12 @@ class FusedMultiTransformerOpKernel : public framework::OpKernel<T> {
       }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step9";
+#endif
+#ifdef _DEBUG_TIME
+        cudaDeviceSynchronize();
+    gettimeofday(&end, NULL);
+    time = diffTime(start, end);
+    std::cout << "step9 residual bias spend " << time << " ms "<< std::endl;
 #endif
       x_data = buf1->data<T>();
       std::swap(buf0, buf1);

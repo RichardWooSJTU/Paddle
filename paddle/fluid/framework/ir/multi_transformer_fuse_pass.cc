@@ -170,6 +170,7 @@ void MultiTransformerFusePass::ApplyImpl(Graph* g) const {
                 }
                 // for cublasLt
                 int k = qkv_w_dims[3], n = qkv_w_dims[0] * qkv_w_dims[1] * qkv_w_dims[2];
+                VLOG(1) << "prepare weight " << name;
                 PrepareWeights(weight_tensor, k, n);
             } 
             for (int i = 0; i < out_linear_w.size(); i++) {
@@ -224,6 +225,7 @@ void MultiTransformerFusePass::PrepareWeights(framework::Tensor* weight_tensor, 
 
     int ldbtransform = 32 * ((n + 8 - 1) / 8) * 8;
     weight_tensor->Resize({(k + 32 - 1) / 32 * ldbtransform});
+    VLOG(1) << "weight_tensor->mutable_data";
     weight_tensor->mutable_data<int8_t>(place);
 }
 
