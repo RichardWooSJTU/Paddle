@@ -45,7 +45,7 @@ using Tensor = framework::Tensor;
 
 // for debug
 // #define _DEBUG_FUSED_MULTI_TRANSFORMER
-#define _DEBUG_TIME
+// #define _DEBUG_TIME
 
 template <typename T>
 static void AllReduce(framework::Tensor &tensor,  // NOLINT

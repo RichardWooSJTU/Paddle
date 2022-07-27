@@ -610,15 +610,15 @@ static void GraphToBlock(const Graph &graph,
   GetGraphOpDesc(nodes, &ops);
 
   for (auto &op : ops) {
-    if (op.Type() == "fused_multi_transformer_int8") {
-      std::vector<std::string> attrs = op.AttrNames();
-      for (const std::string& attr : attrs) {
-        VLOG(1) << "attr [" << attr << "] = ";
-        if (attr == "num_head" || attr == "dim_head" || attr == "dim_ffn") {
-          VLOG(1) << BOOST_GET_CONST(int, op.GetAttr(attr));
-        }
-      }
-    }
+    // if (op.Type() == "fused_multi_transformer_int8") {
+    //   std::vector<std::string> attrs = op.AttrNames();
+    //   for (const std::string& attr : attrs) {
+    //     VLOG(1) << "attr [" << attr << "] = ";
+    //     if (attr == "num_head" || attr == "dim_head" || attr == "dim_ffn") {
+    //       VLOG(1) << BOOST_GET_CONST(int, op.GetAttr(attr));
+    //     }
+    //   }
+    // }
     RemoveControlDepInputAndOuput(&op);
     block->add_ops()->MergeFrom(*op.Proto());
   }
@@ -667,32 +667,12 @@ void GraphToProgram(const Graph &graph,
   }
   VLOG(1) << "program->Size()" << program->Size();
   program->CopyFrom(program_pb);
-<<<<<<< HEAD
-  VLOG(1) << "program->Size()" << program->Size();
-  size_t block_num = program->Size();
-  for (size_t i = 0; i < block_num; i++) {
-    VLOG(1) << "Let us watch block " << i;
-    auto& b = program->Block(i);
-    auto ops = b.AllOps();
-    for (auto * op : ops) {
-      if (op->Type() == "fused_multi_transformer_int8") {
-        std::vector<std::string> attrs = op->AttrNames();
-        for (const std::string& attr : attrs) {
-          VLOG(1) << "attr [" << attr << "] = ";
-          if (attr == "num_head" || attr == "dim_head" || attr == "dim_ffn") {
-            VLOG(1) << BOOST_GET_CONST(int, op->GetAttr(attr));
-          }
-        }
-      }
-    }
-=======
 
   if (graph.Has(details::kProgramDescs)) {
     details::ProgramDescs program_descs =
         graph.Get<details::ProgramDescs>(details::kProgramDescs);
     VLOG(8) << "Merge main programs";
     MergePrograms(program, program_descs, /*append=*/false);
->>>>>>> ea91ca2ff6d0f80fd372dba5bf7f3956826bdad5
   }
 }
 

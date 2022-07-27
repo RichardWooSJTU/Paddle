@@ -283,6 +283,7 @@ class CUDADeviceContext : public phi::GPUContext {
   // elegant way.
   stream::CUDAStream* GetCudaStream() const;
   stream::CUDAStream* SetCudaStream(stream::CUDAStream*);
+  const cudaStream_t* streams() const;
 
  private:
   // NOTE: Just for compatibility with the past, please delete if there is an

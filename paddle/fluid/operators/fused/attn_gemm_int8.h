@@ -16,7 +16,8 @@ limitations under the License. */
 #include "paddle/fluid/operators/fused/cublasLt_helper.h"
 #include "paddle/fluid/platform/float16.h"
 
-#define TRANSPOSE_GEMM
+// #define TRANSPOSE_GEMM
+// #define MULTI_STREAM
 
 namespace paddle {
 namespace operators {
@@ -145,12 +146,15 @@ public:
         n_(n),
         k_(k),
         compute_bias_(compute_bias) {
+#ifdef MULTI_STREAM
 #ifdef TRANSPOSE_GEMM
         if (k_ == 4 * m_ && k_ == 16384) {
 #else
         if (k_ == 4 * n_ && k_ == 16384) {
 #endif
-        // if (false) {
+#else
+        if (false) {
+#endif
             // Use multi stream calculation
             for (int i = 0; i < 4; ++i) {
                 auto helper = std::make_shared<CublasLtHelper>(m, k / 4, n);
@@ -202,12 +206,15 @@ public:
         VLOG(1) << "input_tmp " << input_tmp->numel() << " dtype " << input_tmp->dtype();
         VLOG(1) << "weight_tmp " << weight->numel() << " dtype " << weight->dtype();
         VLOG(1) << "output_tmp " << output_tmp->numel() << " dtype " << output_tmp->dtype();
+#ifdef MULTI_STREAM
 #ifdef TRANSPOSE_GEMM
         if (k_ == 4 * m_ && k_ == 16384) {
 #else
         if (k_ == 4 * n_ && k_ == 16384) {
 #endif
-        // if (false) {
+#else
+        if (false) {
+#endif
             // Synchronize stream
             // PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(stream_events[0], dev_ctx_.stream()));
             PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());

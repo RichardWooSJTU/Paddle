@@ -556,6 +556,10 @@ stream::CUDAStream* CUDADeviceContext::SetCudaStream(
   return old_stream_ptr;
 }
 
+const cudaStream_t* CUDADeviceContext::streams() const{
+  return streams_.data();
+}
+
 CUDAPinnedDeviceContext::CUDAPinnedDeviceContext() {
   eigen_device_.reset(new Eigen::DefaultDevice());
 }

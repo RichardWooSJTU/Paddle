@@ -90,15 +90,15 @@ class WhileOp : public framework::OperatorBase {
       auto& b = program->Block(i);
       auto ops = b.AllOps();
       for (auto * op : ops) {
-        if (op->Type() == "fused_multi_transformer_int8") {
-          std::vector<std::string> attrs = op->AttrNames();
-          for (const std::string& attr : attrs) {
-            VLOG(1) << "attr [" << attr << "] = ";
-            if (attr == "num_head" || attr == "dim_head" || attr == "dim_ffn") {
-              VLOG(1) << BOOST_GET_CONST(int, op->GetAttr(attr));
-            }
-          }
-        }
+        // if (op->Type() == "fused_multi_transformer_int8") {
+        //   std::vector<std::string> attrs = op->AttrNames();
+        //   for (const std::string& attr : attrs) {
+        //     VLOG(1) << "attr [" << attr << "] = ";
+        //     if (attr == "num_head" || attr == "dim_head" || attr == "dim_ffn") {
+        //       VLOG(1) << BOOST_GET_CONST(int, op->GetAttr(attr));
+        //     }
+        //   }
+        // }
       }
     }
 
