@@ -16,8 +16,8 @@ limitations under the License. */
 #include "paddle/fluid/operators/fused/cublasLt_helper.h"
 #include "paddle/fluid/platform/float16.h"
 
-// #define TRANSPOSE_GEMM
-// #define MULTI_STREAM
+#define TRANSPOSE_GEMM
+#define MULTI_STREAM
 
 namespace paddle {
 namespace operators {
@@ -217,12 +217,16 @@ public:
 #endif
             // Synchronize stream
             // PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(stream_events[0], dev_ctx_.stream()));
+            // PADDLE_ENFORCE_GPU_SUCCESS(
+            //         cudaStreamWaitEvent(streams[0], stream_events[0], 0));
+            // PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(stream_events[1], streams[0]));
             PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
-           
+           // for (int i = 1; i < 4; ++i) {
+           //      PADDLE_ENFORCE_GPU_SUCCESS(
+           //          cudaStreamWaitEvent(streams[i], stream_events[1], 0));
+           // }
             // Use multi stream calculation
             for (int i = 0; i < 4; ++i) {
-                // PADDLE_ENFORCE_GPU_SUCCESS(
-                //     cudaStreamWaitEvent(streams[i], stream_events[0], 0));
                 helpers_[i] -> GEMM(input_tmp->data<int8_t>(), weight->data<int8_t>(), output_tmp->data<int32_t>(), streams[i]);
                 // helpers_[i] -> GEMM(input_tmp->data<int8_t>(), weight->data<int8_t>(), output_tmp->data<int32_t>(), dev_ctx_.stream());
                 // PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(stream_events[i+1], streams[i]));
