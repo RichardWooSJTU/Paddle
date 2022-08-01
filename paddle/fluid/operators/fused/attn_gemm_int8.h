@@ -354,7 +354,7 @@ public:
 #else
                                                         m_, n_, 
 #endif
-                                                        dev_ctx_.stream(), 1);
+                                                        dev_ctx_.stream(), num_streams);
 
         if (compute_bias_) {
             // bias_out = output + bias
