@@ -23,7 +23,15 @@ namespace operators {
 class CublasHelper {
 public:
     CublasHelper(int m, int k, int n):alpha_(1), beta_(0), m_(m), k_(k), n_(n) {
-        dyl::cublasCreate(&handle_);
+        cublasStatus_t status;
+        status = dyl::cublasCreate(&handle_);
+        PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasCreate"));
+    }
+    ~CublasHelper(){
+        cublasStatus_t status;
+        status = dyl::cublasDestroy(handle_);
+        PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasDestroy"));
+
     }
     void GEMM(
         int8_t* A,
