@@ -1180,7 +1180,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     static cudaEvent_t stream_events[5];
     if (!stream_events[0]) {
       for (int i = 0; i < 5; ++i)
-        cudaEventCreate(&stream_events[i]);
+        cudaEventCreateWithFlags(&stream_events[i], cudaEventDisableTiming);
     }
     
     // 0. input
@@ -1431,14 +1431,20 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
       buf0 = out;
       buf1 = &tmp_out;
     }
+#ifdef _DEBUG_TIME    
+    static cudaEvent_t debug_events[10];
+    if (!debug_events[0]) {
+      for (int i = 0; i < 10; ++i)
+        cudaEventCreate(&debug_events[i]);
+    }
+#endif
 
     for (int i = 0; i < layers; ++i) {
       VLOG(1) << "LAYER " << i;
+    // step1. layer_norm
 #ifdef _DEBUG_TIME
       std::cout << "LAYER " << i << std::endl;
-      // step1. layer_norm
-      struct timeval start, end;
-      gettimeofday(&start, NULL);
+      PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(debug_events[0], dev_ctx.stream()));
 #endif
       if (i == 0 && pre_layer_norm) {
         auto *ln_scale_data = ln_scales[i]->data<U>();
@@ -1458,11 +1464,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
       VLOG(1) << "step1";
 #endif
 #ifdef _DEBUG_TIME
-    cudaDeviceSynchronize();
-    gettimeofday(&end, NULL);
-    float time = diffTime(start, end);
-    std::cout << "step1 layer_norm spend " << time << " ms "<< std::endl;
-    gettimeofday(&start, NULL);
+PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(debug_events[1], dev_ctx.stream()));
 #endif
 
       // step2. qkv
@@ -1477,11 +1479,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
       VLOG(1) << "step2";
 #endif
 #ifdef _DEBUG_TIME
-cudaDeviceSynchronize();
-    gettimeofday(&end, NULL);
-    time = diffTime(start, end);
-    std::cout << "step2 qkv spend " << time << " ms "<< std::endl;
-    gettimeofday(&start, NULL);
+PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(debug_events[2], dev_ctx.stream()));
 #endif
 
       // step3. fmha
@@ -1564,11 +1562,7 @@ cudaDeviceSynchronize();
       VLOG(1) << "step3";
 #endif
 #ifdef _DEBUG_TIME
-cudaDeviceSynchronize();
-    gettimeofday(&end, NULL);
-    time = diffTime(start, end);
-    std::cout << "step3 fmha spend " << time << " ms "<< std::endl;
-    gettimeofday(&start, NULL);
+PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(debug_events[3], dev_ctx.stream()));
 #endif
 
       // step4. out_linear
@@ -1580,11 +1574,7 @@ cudaDeviceSynchronize();
       VLOG(1) << "step4";
 #endif
 #ifdef _DEBUG_TIME
-cudaDeviceSynchronize();
-    gettimeofday(&end, NULL);
-    time = diffTime(start, end);
-    std::cout << "step4 out_linear spend " << time << " ms "<< std::endl;
-    gettimeofday(&start, NULL);
+PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(debug_events[4], dev_ctx.stream()));
 #endif
 
       // step5. ln(residual + dropout(input + bias))
@@ -1612,11 +1602,7 @@ cudaDeviceSynchronize();
       VLOG(1) << "step5";
 #endif
 #ifdef _DEBUG_TIME
-cudaDeviceSynchronize();
-    gettimeofday(&end, NULL);
-    time = diffTime(start, end);
-    std::cout << "step5 ln spend " << time << " ms "<< std::endl;
-    gettimeofday(&start, NULL);
+PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(debug_events[5], dev_ctx.stream()));
 #endif
 
       // step6. ffn matmul1
@@ -1627,11 +1613,7 @@ cudaDeviceSynchronize();
       VLOG(1) << "step6";
 #endif
 #ifdef _DEBUG_TIME
-cudaDeviceSynchronize();
-    gettimeofday(&end, NULL);
-    time = diffTime(start, end);
-    std::cout << "step6 ffn1 spend " << time << " ms "<< std::endl;
-    gettimeofday(&start, NULL);
+PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(debug_events[6], dev_ctx.stream()));
 #endif
       // step7. act bias
       // TODO(wangxi): remove dropout mask in inference
@@ -1645,11 +1627,7 @@ cudaDeviceSynchronize();
       VLOG(1) << "step7";
 #endif
 #ifdef _DEBUG_TIME
-cudaDeviceSynchronize();
-    gettimeofday(&end, NULL);
-    time = diffTime(start, end);
-    std::cout << "step7 act bias spend " << time << " ms "<< std::endl;
-    gettimeofday(&start, NULL);
+PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(debug_events[7], dev_ctx.stream()));
 #endif
 
       // step8. ffn matmul2
@@ -1665,11 +1643,7 @@ cudaDeviceSynchronize();
       VLOG(1) << "step8.1";
 #endif
 #ifdef _DEBUG_TIME
-cudaDeviceSynchronize();
-    gettimeofday(&end, NULL);
-    time = diffTime(start, end);
-    std::cout << "step8 ffn matmul2 spend " << time << " ms "<< std::endl;
-    gettimeofday(&start, NULL);
+PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(debug_events[8], dev_ctx.stream()));
 #endif
 
       // step9. residual bias
@@ -1705,10 +1679,35 @@ cudaDeviceSynchronize();
       VLOG(1) << "step9";
 #endif
 #ifdef _DEBUG_TIME
-cudaDeviceSynchronize();
-    gettimeofday(&end, NULL);
-    time = diffTime(start, end);
-    std::cout << "step9 residual bias spend " << time << " ms "<< std::endl;
+PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(debug_events[9], dev_ctx.stream()));
+PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
+float time;
+PADDLE_ENFORCE_GPU_SUCCESS(cudaEventElapsedTime(&time, debug_events[1], debug_events[0]));
+std::cout << "1. layer_norm time " << time << std::endl;
+
+PADDLE_ENFORCE_GPU_SUCCESS(cudaEventElapsedTime(&time, debug_events[2], debug_events[1]));
+std::cout << "2. qkv time " << time << std::endl;
+
+PADDLE_ENFORCE_GPU_SUCCESS(cudaEventElapsedTime(&time, debug_events[3], debug_events[2]));
+std::cout << "3. fmha time " << time << std::endl;
+
+PADDLE_ENFORCE_GPU_SUCCESS(cudaEventElapsedTime(&time, debug_events[4], debug_events[3]));
+std::cout << "4. out_linear time " << time << std::endl;
+
+PADDLE_ENFORCE_GPU_SUCCESS(cudaEventElapsedTime(&time, debug_events[5], debug_events[4]));
+std::cout << "5. ln(residual + dropout(input + bias)) time " << time << std::endl;
+
+PADDLE_ENFORCE_GPU_SUCCESS(cudaEventElapsedTime(&time, debug_events[6], debug_events[5]));
+std::cout << "6. ffn matmul1 time " << time << std::endl;
+
+PADDLE_ENFORCE_GPU_SUCCESS(cudaEventElapsedTime(&time, debug_events[7], debug_events[6]));
+std::cout << "7. act bias time " << time << std::endl;
+
+PADDLE_ENFORCE_GPU_SUCCESS(cudaEventElapsedTime(&time, debug_events[8], debug_events[7]));
+std::cout << "8. ffn matmul2 time " << time << std::endl;
+
+PADDLE_ENFORCE_GPU_SUCCESS(cudaEventElapsedTime(&time, debug_events[9], debug_events[8]));
+std::cout << "9. residual bias time " << time << std::endl;
 #endif
       x_data = buf1->data<T>();
       std::swap(buf0, buf1);
