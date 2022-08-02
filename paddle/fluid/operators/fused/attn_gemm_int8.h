@@ -14,10 +14,11 @@ limitations under the License. */
 
 #include "paddle/fluid/platform/device/gpu/gpu_info.h"
 #include "paddle/fluid/operators/fused/cublasLt_helper.h"
+#include "paddle/fluid/operators/fused/cublas_gemm_ex.h"
 #include "paddle/fluid/platform/float16.h"
 
-#define TRANSPOSE_GEMM
-#define MULTI_STREAM
+// #define TRANSPOSE_GEMM
+// #define MULTI_STREAM
 
 namespace paddle {
 namespace operators {
@@ -183,11 +184,11 @@ public:
 #endif
             // Use multi stream calculation
             for (int i = 0; i < 4; ++i) {
-                auto helper = std::make_shared<CublasLtHelper>(m, k / 4, n);
+                auto helper = std::make_shared<CublasHelper>(m, k / 4, n);
                 helpers_.emplace_back(helper);
             }
         } else {
-            auto helper = std::make_shared<CublasLtHelper>(m, k, n);
+            auto helper = std::make_shared<CublasHelper>(m, k, n);
             helpers_.emplace_back(helper);
         }
 
@@ -309,7 +310,8 @@ private:
     int k_; // k
 
     int compute_bias_;
-    std::vector<std::shared_ptr<CublasLtHelper>> helpers_;
+    // std::vector<std::shared_ptr<CublasLtHelper>> helpers_;
+    std::vector<std::shared_ptr<CublasHelper>> helpers_;
 
 };
 
