@@ -138,7 +138,7 @@ void col32_to_row_major_dequantize_kernelLauncher(int32_t* input,
   int repeat = batch_size * hidden_units / 65536;
 
   col32_to_row_major_dequantize_kernel<<<grid, block, 0, stream>>>(
-      output, input, hidden_units, batch_size, 127.0f, num_streams);
+      output, input, hidden_units, batch_size, 127.0f, repeat, num_streams);
 }
 
 
