@@ -15,74 +15,79 @@ limitations under the License. */
 #include "paddle/fluid/platform/device/gpu/gpu_info.h"
 #include "paddle/fluid/platform/float16.h"
 #include "paddle/phi/kernels/funcs/blas/blas.h"
-
-static inline __device__ int8_t float_to_int8_rn(float x)
-{
-  uint32_t dst;
-  asm volatile("cvt.rni.sat.s8.f32 %0, %1;"
-               : "=r"(dst)
-               : "f"(x));
-  return reinterpret_cast<const int8_t &>(dst);
-}
-
-template <typename T>
-__global__ void row_major_to_col32_quantize_kernel(const T* input,
-                                                 char4* output,
-                                                 int m,
-                                                 int n) {
-
-}
-
-template <typename T>
-void row_major_to_col32_quantize_kernelLauncher(const T* input,
-                                                int8_t* output,
-                                                // T* scale,
-                                                const int m,
-                                                const int n,
-                                                cudaStream_t stream) {
-//   std::cout << "row-major-to-col32: m: " << m << " n: " << n << std::endl;
-
-    dim3 grid((m + 31) / 32, (n + 31) / 32);
-    dim3 block(32, 32);
-
-    row_major_to_col32_quantize_kernel<<<grid, block, 0, stream>>>(
-    input,
-    (char4*)output,
-    m,
-    n);
-}
-
-template <typename T>
-__global__ void col32_to_row_major_dequantize_kernel(T* output,
-                                                  int32_t* input,
-                                                  const int m,  // hidden
-                                                  const int n,  // batch size
-                                                  const float max_range,
-                                                  int repeat) 
-{
-}
-
-template <typename T>
-void col32_to_row_major_dequantize_kernelLauncher(int32_t* input,
-                                                  T* output,
-                                                  const int batch_size, // m
-                                                  const int hidden_units,  // n
-                                                  cudaStream_t stream) {
-                                                      
-//   dim3 grid((hidden_units + 31) / 32, (batch_size + 31) / 32);
-//   dim3 block(32, 32);
-
-  dim3 grid(1, 512);
-  dim3 block(32, 4);
-
-  int repeat = batch_size * hidden_units / 65536;
-
-  col32_to_row_major_dequantize_kernel<<<grid, block, 0, stream>>>(
-      output, input, hidden_units, batch_size, 127.0f, repeat);
-}
+#include "paddle/fluid/platform/dynload/cublas.h"
 
 namespace paddle {
 namespace operators {
+
+// static inline __device__ int8_t float_to_int8_rn(float x)
+// {
+//   uint32_t dst;
+//   asm volatile("cvt.rni.sat.s8.f32 %0, %1;"
+//                : "=r"(dst)
+//                : "f"(x));
+//   return reinterpret_cast<const int8_t &>(dst);
+// }
+
+// template <typename T>
+// __global__ void row_major_to_col32_quantize_kernel(const T* input,
+//                                                  char4* output,
+//                                                  int m,
+//                                                  int n) {
+
+// }
+
+// template <typename T>
+// void row_major_to_col32_quantize_kernelLauncher(const T* input,
+//                                                 int8_t* output,
+//                                                 // T* scale,
+//                                                 const int m,
+//                                                 const int n,
+//                                                 cudaStream_t stream) {
+// //   std::cout << "row-major-to-col32: m: " << m << " n: " << n << std::endl;
+
+//     dim3 grid((m + 31) / 32, (n + 31) / 32);
+//     dim3 block(32, 32);
+
+//     row_major_to_col32_quantize_kernel<<<grid, block, 0, stream>>>(
+//     input,
+//     (char4*)output,
+//     m,
+//     n);
+// }
+
+// template <typename T>
+// __global__ void col32_to_row_major_dequantize_kernel(T* output,
+//                                                   int32_t* input,
+//                                                   const int m,  // hidden
+//                                                   const int n,  // batch size
+//                                                   const float max_range,
+//                                                   int repeat) 
+// {
+// }
+
+// template <typename T>
+// void col32_to_row_major_dequantize_kernelLauncher(int32_t* input,
+//                                                   T* output,
+//                                                   const int batch_size, // m
+//                                                   const int hidden_units,  // n
+//                                                   cudaStream_t stream) {
+                                                      
+// //   dim3 grid((hidden_units + 31) / 32, (batch_size + 31) / 32);
+// //   dim3 block(32, 32);
+
+//   dim3 grid(1, 512);
+//   dim3 block(32, 4);
+
+//   int repeat = batch_size * hidden_units / 65536;
+
+//   col32_to_row_major_dequantize_kernel<<<grid, block, 0, stream>>>(
+//       output, input, hidden_units, batch_size, 127.0f, repeat);
+// }
+
+
+
+namespace dyl = paddle::platform::dynload;
 
 template <typename T>
 class AttnMatmulINT8Ex {
@@ -107,32 +112,62 @@ public:
                         framework::Tensor* output_tmp, //[int32]  workspace
                         framework::Tensor* bias_out,
                         cudaStream_t* streams,
-                        cudaEvent_t* stream_events){
+                        cudaEvent_t* stream_events,
+                        cublasHandle_t handle){
         int m = m_, k = k_, n = n_;
-        CBLAS_TRANSPOSE transA = CblasNoTrans;
-        CBLAS_TRANSPOSE transB = CblasTrans;
+        VLOG(1) << "m=" << m_ << "k=" << k_ << "n=" << n_;
+        // CBLAS_TRANSPOSE transA = CblasNoTrans;
+        // CBLAS_TRANSPOSE transB = CblasTrans;
         int8_t alpha = static_cast<int8_t>(1);
         int8_t beta = static_cast<int8_t>(0);
-        row_major_to_col32_quantize_kernelLauncher<T>(input->data<T>(), 
-                                                      input_tmp->data<int8_t>(), 
-                                                        m_, k_,
-                                                      dev_ctx_.stream());
+        // row_major_to_col32_quantize_kernelLauncher<T>(input->data<T>(), 
+        //                                               input_tmp->data<int8_t>(), 
+        //                                                 m_, k_,
+        //                                               dev_ctx_.stream());
 
-        auto blas = phi::funcs::GetBlas<platform::CUDADeviceContext, int8_t>(dev_ctx_);
-        blas.GEMMINT8(transA,
-                transB,
-                m_,
-                n_,
-                k_,
-                alpha,
-                input_tmp->data<int8_t>(),
-                weight->data<int8_t>(),
-                beta,
-                output_tmp->data<int32_t>());
-        col32_to_row_major_dequantize_kernelLauncher<T>(output_tmp->data<int32_t>(), 
-                                                        output->data<T>(), 
-                                                        m_, n_, 
-                                                        dev_ctx_.stream());
+        // auto blas = phi::funcs::GetBlas<platform::CUDADeviceContext, int8_t>(dev_ctx_);
+        // blas.GEMMINT8(transA,
+        //         transB,
+        //         m_,
+        //         n_,
+        //         k_,
+        //         alpha,
+        //         input_tmp->data<int8_t>(),
+        //         weight->data<int8_t>(),
+        //         beta,
+        //         output_tmp->data<int32_t>());
+        cublasGemmAlgo_t algo = CUBLAS_GEMM_DEFAULT_TENSOR_OP;
+        cublasOperation_t transa = CUBLAS_OP_T;
+        cublasOperation_t transb = CUBLAS_OP_N;
+        cublasStatus_t status;
+        status = dyl::cublasGemmEx(handle,
+            transa,
+            transb,
+            m,
+            // n,
+            n,
+            // m,
+            k,
+            &alpha,
+            input_tmp->data<int8_t>(),
+            CUDA_R_8I,
+            k,
+            weight->data<int8_t>(),
+            CUDA_R_8I,
+            k,
+            &beta,
+            output_tmp->data<int32_t>(),
+            CUDA_R_32I,
+            m,
+            CUBLAS_COMPUTE_32I,
+            algo);
+        PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasGemmEx"));
+        // col32_to_row_major_dequantize_kernelLauncher<T>(output_tmp->data<int32_t>(), 
+        //                                                 output->data<T>(), 
+        //                                                 m_, n_, 
+        //                                                 dev_ctx_.stream());
+        // PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
+
         if (compute_bias_) {
             // bias_out = output + bias
             VLOG(1) << "[DEBUG] compute_bias_";

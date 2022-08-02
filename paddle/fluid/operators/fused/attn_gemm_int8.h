@@ -17,8 +17,8 @@ limitations under the License. */
 #include "paddle/fluid/operators/fused/cublas_gemm_ex.h"
 #include "paddle/fluid/platform/float16.h"
 
-#define TRANSPOSE_GEMM
-#define MULTI_STREAM
+// #define TRANSPOSE_GEMM
+// #define MULTI_STREAM
 
 namespace paddle {
 namespace operators {
