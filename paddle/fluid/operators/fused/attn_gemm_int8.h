@@ -18,7 +18,7 @@ limitations under the License. */
 #include "paddle/fluid/platform/float16.h"
 
 // #define TRANSPOSE_GEMM
-// #define MULTI_STREAM
+#define MULTI_STREAM
 
 namespace paddle {
 namespace operators {
@@ -223,15 +223,15 @@ public:
         num_streams = 4;
 #endif        
         VLOG(1) << "[DEBUG] row_major_to_col32_quantize_kernelLauncher";
-        row_major_to_col32_quantize_kernelLauncher<T>(input->data<T>(), 
-                                                      input_tmp->data<int8_t>(), 
-#ifdef TRANSPOSE_GEMM
-                                                        n_, k_,
-#else
-                                                        m_, k_,
-#endif
+//         row_major_to_col32_quantize_kernelLauncher<T>(input->data<T>(), 
+//                                                       input_tmp->data<int8_t>(), 
+// #ifdef TRANSPOSE_GEMM
+//                                                         n_, k_,
+// #else
+//                                                         m_, k_,
+// #endif
                                                       
-                                                      dev_ctx_.stream(), num_streams);
+//                                                       dev_ctx_.stream(), num_streams);
 
         VLOG(1) << "[DEBUG] GEMM";
         VLOG(1) << "input_tmp " << input_tmp->numel() << " dtype " << input_tmp->dtype();
@@ -282,14 +282,14 @@ public:
 
         //dequant C
         VLOG(1) << "[DEBUG] col32_to_row_major_dequantize_kernelLauncher";
-        col32_to_row_major_dequantize_kernelLauncher<T>(output_tmp->data<int32_t>(), 
-                                                        output->data<T>(), 
-#ifdef TRANSPOSE_GEMM
-                                                        n_, m_,
-#else
-                                                        m_, n_, 
-#endif
-                                                        dev_ctx_.stream(), num_streams);
+//         col32_to_row_major_dequantize_kernelLauncher<T>(output_tmp->data<int32_t>(), 
+//                                                         output->data<T>(), 
+// #ifdef TRANSPOSE_GEMM
+//                                                         n_, m_,
+// #else
+//                                                         m_, n_, 
+// #endif
+//                                                         dev_ctx_.stream(), num_streams);
 
         if (compute_bias_) {
             // bias_out = output + bias
