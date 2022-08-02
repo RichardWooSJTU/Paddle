@@ -100,9 +100,10 @@ __global__ void col32_to_row_major_dequantize_kernel(T* output,
                                                   const int m,  // hidden
                                                   const int n,  // batch size
                                                   const float max_range,
+                                                  int repeat,
                                                   const int num_streams) 
 {
-
+  for (int i=0; i<repeat; i++) {
   int m_id = blockIdx.x * blockDim.x + threadIdx.x;  // hidden
   int n_id = blockIdx.y * blockDim.y + threadIdx.y;  // batch size
 
@@ -117,6 +118,7 @@ __global__ void col32_to_row_major_dequantize_kernel(T* output,
         static_cast<T>(static_cast<float>(input[input_index]) *
             1.0 / max_range * 1.0 / max_range);
   }
+  }
 }
 
 template <typename T>
@@ -127,15 +129,13 @@ void col32_to_row_major_dequantize_kernelLauncher(int32_t* input,
                                                   cudaStream_t stream,
                                                   const int num_streams) {
                                                       
-  dim3 grid((hidden_units + 31) / 32, (batch_size + 31) / 32);
-  dim3 block(32, 32);
+//   dim3 grid((hidden_units + 31) / 32, (batch_size + 31) / 32);
+//   dim3 block(32, 32);
 
-  // std::cout << "col32-to-row-major: m: " << batch_size << " n: " << hidden_units << std::endl;
+  dim3 grid(1, 512);
+  dim3 block(32, 4);
 
-//   dim3 grid(1, 512);
-//   dim3 block(32, 4);
-
-//   int repeat = batch_size * hidden_units / 65536;
+  int repeat = batch_size * hidden_units / 65536;
 
   col32_to_row_major_dequantize_kernel<<<grid, block, 0, stream>>>(
       output, input, hidden_units, batch_size, 127.0f, num_streams);
