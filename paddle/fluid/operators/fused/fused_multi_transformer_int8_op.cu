@@ -26,6 +26,7 @@ limitations under the License. */
 #include "paddle/fluid/operators/fused/attention_layer_norm.h"
 #include "paddle/fluid/operators/fused/attn_gemm.h"
 #include "paddle/fluid/operators/fused/attn_gemm_int8.h"
+#include "paddle/fluid/operators/fused/attn_gemmex_int8.h"
 #include "paddle/fluid/operators/fused/fmha_ref.h"
 #include "paddle/fluid/operators/fused/fused_dropout_helper.h"
 #include "paddle/fluid/platform/device/gpu/gpu_device_function.h"
@@ -46,7 +47,7 @@ using Tensor = framework::Tensor;
 // for debug
 // #define _DEBUG_FUSED_MULTI_TRANSFORMER
 // #define _DEBUG_TIME
-
+#define USE_GEMMEX
 
 template <typename T>
 static void AllReduce(framework::Tensor &tensor,  // NOLINT
@@ -1176,12 +1177,15 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     auto *time_step = ctx.Input<Tensor>("TimeStep");
 
     const cudaStream_t* c_streams = dev_ctx.streams();  
+
     cudaStream_t* streams = const_cast<cudaStream_t*>(c_streams);
     static cudaEvent_t stream_events[5];
+#ifndef USE_GEMMEX
     if (!stream_events[0]) {
       for (int i = 0; i < 5; ++i)
         cudaEventCreateWithFlags(&stream_events[i], cudaEventDisableTiming);
     }
+#endif
     
     // 0. input
     auto *input_x = ctx.Input<Tensor>("X");
@@ -1232,7 +1236,13 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 
     bool compute_bias = qkv_biases.size() > 0 && time_step == nullptr;
     // (transA, transB, compute_bias) = (false, trans_qkvw, false)
-
+#ifdef USE_GEMMEX
+    AttnMatmulINT8Ex<T> qkv_compute(dev_ctx,
+      bsz_seq,
+      output_size,
+      input_size,
+      compute_bias);
+#else
 #ifdef TRANSPOSE_GEMM
     VLOG(1) << "#define TRANSPOSE_GEMM";
     AttnMatmulINT8<T> qkv_compute(dev_ctx,
@@ -1252,6 +1262,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
       compute_bias,
       qkv_weights,
      place);
+#endif
 #endif
     Tensor qkv_out;
     auto *qkv_out_data =
@@ -1317,12 +1328,17 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     auto out_linear_biases = ctx.MultiInput<Tensor>("OutLinearBias");
     int ring_id = ctx.Attr<int>("ring_id");
     // (transA, transB, compute_bias) = (false, false, false)
+#ifdef USE_GEMMEX
+AttnMatmulINT8Ex<T> out_linear_compute(
+  dev_ctx, bsz_seq, dim_embed,  hidden_size, false);
+#else
 #ifdef TRANSPOSE_GEMM
     AttnMatmulINT8<T> out_linear_compute(
         dev_ctx,  dim_embed, bsz_seq, hidden_size, false, out_linear_weights, place);
 #else
     AttnMatmulINT8<T> out_linear_compute(
       dev_ctx, bsz_seq, dim_embed,  hidden_size, false, out_linear_weights, place);
+#endif
 #endif
     
     // VLOG(1) << "out_linear " << "m=" << bsz_seq << "k=" << hidden_size << "n=" << dim_embed;
@@ -1349,13 +1365,17 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 
     int dim_ffn = ctx.Attr<int>("dim_ffn");
     VLOG(1) << "dim_ffn" << dim_ffn;
-
+#ifdef USE_GEMMEX
+    AttnMatmulINT8Ex<T> ffn1_linear_compute(
+      dev_ctx, bsz_seq,  dim_ffn, dim_embed, false);
+#else
 #ifdef TRANSPOSE_GEMM
     AttnMatmulINT8<T> ffn1_linear_compute(
         dev_ctx, dim_ffn, bsz_seq,  dim_embed, false, ffn1_weights, place);
 #else
     AttnMatmulINT8<T> ffn1_linear_compute(
            dev_ctx, bsz_seq,  dim_ffn, dim_embed, false, ffn1_weights, place);
+#endif
 #endif
     // VLOG(1) << "ffn1 " << "m=" << bsz_seq << "k=" << dim_embed << "n=" << dim_ffn;
     Tensor ffn1_out;
@@ -1374,12 +1394,17 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     // 8. ffn2 matmul
     auto ffn2_weights = ctx.MultiInput<Tensor>("FFN2Weight");
     auto ffn2_biases = ctx.MultiInput<Tensor>("FFN2Bias");
+#ifdef USE_GEMMEX
+    AttnMatmulINT8Ex<T> ffn2_linear_compute(
+      dev_ctx, bsz_seq, dim_embed, dim_ffn, false);
+#else
 #ifdef TRANSPOSE_GEMM
     AttnMatmulINT8<T> ffn2_linear_compute(
         dev_ctx, dim_embed, bsz_seq, dim_ffn, false, ffn2_weights, place, true);
 #else
     AttnMatmulINT8<T> ffn2_linear_compute(
       dev_ctx, bsz_seq, dim_embed, dim_ffn, false, ffn2_weights, place, true);
+#endif
 #endif
     // VLOG(1) << "ffn2 " << "m=" << bsz_seq << "k=" << dim_ffn << "n=" << dim_embed;
 

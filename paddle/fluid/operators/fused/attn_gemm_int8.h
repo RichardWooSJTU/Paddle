@@ -17,8 +17,8 @@ limitations under the License. */
 #include "paddle/fluid/operators/fused/cublas_gemm_ex.h"
 #include "paddle/fluid/platform/float16.h"
 
-// #define TRANSPOSE_GEMM
-// #define MULTI_STREAM
+#define TRANSPOSE_GEMM
+#define MULTI_STREAM
 
 namespace paddle {
 namespace operators {
@@ -43,34 +43,31 @@ template <typename T>
 __global__ void row_major_to_col32_quantize_kernel(const T* input,
                                                  char4* output,
                                                  int m,
-                                                 int n, 
-                                                 int repeat,
+                                                 int n,
                                                  const int num_streams)
 {
     // const float scale = __ldg(scale_ptr);
-    for (int i=0; i<repeat; i++) {
-        int n_id = (blockIdx.x * blockDim.x + threadIdx.x) << 2;
-        int m_id = blockIdx.y * blockDim.y + threadIdx.y;
+    int n_id = (blockIdx.x * blockDim.x + threadIdx.x) << 2;
+    int m_id = blockIdx.y * blockDim.y + threadIdx.y;
+    int tmp = n / 4;
+    int stream_id = n_id / tmp; // 0,1,2,..., num_streams-1
 
-        int stream_id = n_id / (n / 4); // 0,1,2,..., num_streams-1
+    int out_id_tmp = (m * stream_id + m_id - stream_id) * tmp + n_id; // split into num_streams submatrix
+    int stream_offset = m * stream_id * tmp;                    // offset of the current submatrix
+    int stream_m_id = (out_id_tmp - stream_offset) / tmp;           // m_id in the submatrix
+    int stream_n_id = (out_id_tmp - stream_offset) % tmp;           // n_id in the submatrix
+    int output_id = stream_offset + ((stream_n_id & 0xffffffe0) * m + (stream_m_id << 5) + (stream_n_id & 31)) >> 2;
 
-        int out_id_tmp = (m * stream_id + m_id - stream_id) * n / 4 + n_id; // split into num_streams submatrix
-        int stream_offset = m * n * (stream_id) / 4;                    // offset of the current submatrix
-        int stream_m_id = (out_id_tmp - stream_offset) / (n / 4);           // m_id in the submatrix
-        int stream_n_id = (out_id_tmp - stream_offset) % (n / 4);           // n_id in the submatrix
-        int output_id = stream_offset + ((stream_n_id & 0xffffffe0) * m + (stream_m_id << 5) + (stream_n_id & 31)) >> 2;
-
-        bool check = ((m_id < m) && (n_id < n));
-        if (check) {
-            char4 tmp;
-            tmp.x = __float2int_rn(static_cast<float>(input[m_id * n + n_id]) * 1.0);
-            tmp.y = __float2int_rn(static_cast<float>(input[m_id * n + n_id+1]) * 1.0);
-            tmp.z = __float2int_rn(static_cast<float>(input[m_id * n + n_id+2]) * 1.0);
-            tmp.w = __float2int_rn(static_cast<float>(input[m_id * n + n_id+3]) * 1.0);
-            // COL32_col = n_id >> 5 ; COL32_row = (m_id << 5) + (n_id & 31)
-            // COL32_idx = (COL32_col << 5) * m + COL32_row = (n_id & 0xffffffe0)*m + (m_id << 5) + (n_id & 31)
-            output[output_id] = tmp;
-        }
+    bool check = ((m_id < m) && (n_id < n));
+    if (check) {
+        char4 tmp;
+        tmp.x = __float2int_rn(static_cast<float>(input[m_id * n + n_id]) * 1.0);
+        tmp.y = __float2int_rn(static_cast<float>(input[m_id * n + n_id+1]) * 1.0);
+        tmp.z = __float2int_rn(static_cast<float>(input[m_id * n + n_id+2]) * 1.0);
+        tmp.w = __float2int_rn(static_cast<float>(input[m_id * n + n_id+3]) * 1.0);
+        // COL32_col = n_id >> 5 ; COL32_row = (m_id << 5) + (n_id & 31)
+        // COL32_idx = (COL32_col << 5) * m + COL32_row = (n_id & 0xffffffe0)*m + (m_id << 5) + (n_id & 31)
+        output[output_id] = tmp;
     }
 }
 
@@ -82,77 +79,17 @@ void row_major_to_col32_quantize_kernelLauncher(const T* input,
                                                 const int n,
                                                 cudaStream_t stream,
                                                 const int num_streams) {
-
-//   dim3 grid((m + 31) / 32, (n + 31) / 32);
-//   dim3 block(32, 32);
 //   std::cout << "row-major-to-col32: m: " << m << " n: " << n << std::endl;
 
-  if (m>1) {
-    dim3 grid(1, 512);
-    dim3 block(32, 4);
-
-    int repeat = m * n / 65536;
+    dim3 grid((m + 31) / 32, (n + 31) / 32);
+    dim3 block(32, 32);
 
     row_major_to_col32_quantize_kernel<<<grid, block, 0, stream>>>(
-      input,
-      (char4*)output,
-      m,
-      n,
-      repeat,
-      num_streams);
-//   } else if (m==1 && n==4096) {
-//     dim3 grid(1, 256);
-//     dim3 block(1, 4);
-
-//     int repeat = m * n / 1024;
-
-//     row_major_to_col32_quantize_kernel<<<grid, block, 0, stream>>>(
-//       input,
-//       (char4*)output,
-//       m,
-//       n,
-//       repeat,
-//       num_streams);
-  } else if (m==1 && n==12288) {
-    dim3 grid(1, 256);
-    dim3 block(1, 16);
-
-    int repeat = m * n / 4096;
-
-    row_major_to_col32_quantize_kernel<<<grid, block, 0, stream>>>(
-      input,
-      (char4*)output,
-      m,
-      n,
-      repeat,
-      num_streams);
-  } else if (m==1 && n==16384) {
-    dim3 grid(1, 256);
-    dim3 block(1, 32);
-
-    int repeat = m * n / 8192;
-
-    row_major_to_col32_quantize_kernel<<<grid, block, 0, stream>>>(
-      input,
-      (char4*)output,
-      m,
-      n,
-      repeat,
-      num_streams);
-  } else {
-     dim3 grid((m + 31) / 32, (n + 31) / 32);
-     dim3 block(32, 32);
-
-    int repeat = 1;
-
-    row_major_to_col32_quantize_kernel<<<grid, block, 0, stream>>>(
-      input,
-      (char4*)output,
-      m,
-      n,
-      repeat,
-      num_streams);
-  }
+    input,
+    (char4*)output,
+    m,
+    n,
+    num_streams);
 }
 
 // convert COL32 to row-major 
@@ -166,7 +103,6 @@ __global__ void col32_to_row_major_dequantize_kernel(T* output,
                                                   int repeat,
                                                   const int num_streams) 
 {
-
   for (int i=0; i<repeat; i++) {
   int m_id = blockIdx.x * blockDim.x + threadIdx.x;  // hidden
   int n_id = blockIdx.y * blockDim.y + threadIdx.y;  // batch size
@@ -195,8 +131,6 @@ void col32_to_row_major_dequantize_kernelLauncher(int32_t* input,
                                                       
 //   dim3 grid((hidden_units + 31) / 32, (batch_size + 31) / 32);
 //   dim3 block(32, 32);
-
-  // std::cout << "col32-to-row-major: m: " << batch_size << " n: " << hidden_units << std::endl;
 
   dim3 grid(1, 512);
   dim3 block(32, 4);
@@ -250,11 +184,11 @@ public:
 #endif
             // Use multi stream calculation
             for (int i = 0; i < 4; ++i) {
-                auto helper = std::make_shared<CublasHelper>(m, k / 4, n);
+                auto helper = std::make_shared<CublasLtHelper>(m, k / 4, n);
                 helpers_.emplace_back(helper);
             }
         } else {
-            auto helper = std::make_shared<CublasHelper>(m, k, n);
+            auto helper = std::make_shared<CublasLtHelper>(m, k, n);
             helpers_.emplace_back(helper);
         }
 
@@ -335,10 +269,10 @@ public:
             //         cudaStreamWaitEvent(dev_ctx_.stream(), stream_events[i+1], 0));
             // Reduce
             // ...
-            VLOG(1) << "REDUCE";
-            int block = 1024;
-            int grid = (m_ * n_ * 4 + block - 1) / block;
-            reduce<<<grid, block, 0, dev_ctx_.stream()>>>(output_tmp->data<int32_t>(), m_, n_, 4);
+            // VLOG(1) << "REDUCE";
+            // int block = 1024;
+            // int grid = (m_ * n_ * 4 + block - 1) / block;
+            // reduce<<<grid, block, 0, dev_ctx_.stream()>>>(output_tmp->data<int32_t>(), m_, n_, 4);
 
         } else {
             helpers_[0] -> GEMM(input_tmp->data<int8_t>(), weight->data<int8_t>(), output_tmp->data<int32_t>(), dev_ctx_.stream());
@@ -376,8 +310,7 @@ private:
     int k_; // k
 
     int compute_bias_;
-    // std::vector<std::shared_ptr<CublasLtHelper>> helpers_;
-    std::vector<std::shared_ptr<CublasHelper>> helpers_;
+    std::vector<std::shared_ptr<CublasLtHelper>> helpers_;
 
 };
 

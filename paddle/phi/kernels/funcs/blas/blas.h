@@ -124,6 +124,18 @@ class Blas {
             T* C,
             int ldc) const;
 
+
+  void GEMMINT8(CBLAS_TRANSPOSE transA,
+            CBLAS_TRANSPOSE transB,
+            int M,
+            int N,
+            int K,
+            int32_t alpha,
+            const int8_t* A,
+            const int8_t* B,
+            int32_t beta,
+            int32_t* C) const;
+
 #ifdef PADDLE_WITH_MKLML  // @{ Group MKLML: class Blas
   template <typename T>
   T* GEMM_ALLOC(const CBLAS_IDENTIFIER id,
@@ -418,6 +430,11 @@ class BlasT : private Blas<DeviceContext> {
   template <typename... ARGS>
   void GEMM(ARGS... args) const {
     Base()->template GEMM<T>(args...);
+  }
+
+  template <typename... ARGS>
+  void GEMMINT8(ARGS... args) const {
+    Base()->template GEMMINT8(args...);
   }
 
 #ifdef PADDLE_WITH_MKLML  // @{ Group MKLML: class BlasT

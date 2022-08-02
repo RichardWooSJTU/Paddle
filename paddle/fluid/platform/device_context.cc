@@ -538,9 +538,9 @@ CUDADeviceContext::CUDADeviceContext(CUDAPlace place) : phi::GPUContext(place) {
   phi::GPUContext::PartialInitWithoutAllocator();
   cuda_stream_.reset(new stream::CUDAStream(phi::GPUContext::stream(), place));
   streams_.resize(4);
-  for (int i = 0; i < 4; ++i) {
-    cudaStreamCreate(&streams_[i]);
-  }
+  // for (int i = 0; i < 4; ++i) {
+  //   cudaStreamCreate(&streams_[i]);
+  // }
 }
 
 CUDADeviceContext::~CUDADeviceContext() = default;

@@ -23,22 +23,15 @@ namespace operators {
 class CublasHelper {
 public:
     CublasHelper(int m, int k, int n):alpha_(1), beta_(0), m_(m), k_(k), n_(n) {
-        cublasStatus_t status;
-        status = dyl::cublasCreate(&handle_);
-        PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasCreate"));
+        
     }
-    ~CublasHelper(){
-        cublasStatus_t status;
-        status = dyl::cublasDestroy(handle_);
-        PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasDestroy"));
-
-    }
+   
     void GEMM(
         int8_t* A,
         const int8_t* B,
         int32_t* C,
-        cudaStream_t stream) {
-        PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
+        cublasHandle_t handle) {
+        // PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
         cublasStatus_t status;
         VLOG(1) << "m=" << m_ << "k=" << k_ << "n=" << n_;
 
@@ -46,7 +39,7 @@ public:
         cublasOperation_t transb = CUBLAS_OP_N;
         cublasGemmAlgo_t algo = CUBLAS_GEMM_DEFAULT_TENSOR_OP;
 
-        status = dyl::cublasGemmEx(handle_,
+        status = dyl::cublasGemmEx(handle,
             transa,
             transb,
             m_,
@@ -67,14 +60,14 @@ public:
             algo);
         PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasGemmEx"));
 
-        PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
+        // PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
         VLOG(1) << "gemm finsh";
 
 
     }
 
 private:
-    cublasHandle_t handle_;
+    
     int32_t alpha_;
     int32_t beta_;
 
