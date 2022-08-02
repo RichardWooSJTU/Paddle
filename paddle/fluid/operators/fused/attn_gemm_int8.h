@@ -82,8 +82,8 @@ void row_major_to_col32_quantize_kernelLauncher(const T* input,
                                                 cudaStream_t stream,
                                                 const int num_streams) {
 
-//   dim3 grid((m + 31) / 32, (n + 31) / 32);
-//   dim3 block(32, 32);
+  dim3 grid1((m + 31) / 32, (n + 31) / 32);
+  dim3 block1(32, 32);
 //   std::cout << "row-major-to-col32: m: " << m << " n: " << n << std::endl;
 
   if (m>1) {
@@ -92,13 +92,13 @@ void row_major_to_col32_quantize_kernelLauncher(const T* input,
 
     int repeat = m * n / 65536;
 
-    row_major_to_col32_quantize_kernel<<<grid, block, 0, stream>>>(
+    row_major_to_col32_quantize_kernel<<<grid1, block1, 0, stream>>>(
       input,
       (char4*)output,
       m,
       n,
       repeat,
-      num_streams);
+      1);
 //   } else if (m==1 && n==4096) {
 //     dim3 grid(1, 256);
 //     dim3 block(1, 4);
@@ -118,33 +118,33 @@ void row_major_to_col32_quantize_kernelLauncher(const T* input,
 
     int repeat = m * n / 4096;
 
-    row_major_to_col32_quantize_kernel<<<grid, block, 0, stream>>>(
+    row_major_to_col32_quantize_kernel<<<grid1, block1, 0, stream>>>(
       input,
       (char4*)output,
       m,
       n,
       repeat,
-      num_streams);
+      1);
   } else if (m==1 && n==16384) {
     dim3 grid(1, 256);
     dim3 block(1, 32);
 
     int repeat = m * n / 8192;
 
-    row_major_to_col32_quantize_kernel<<<grid, block, 0, stream>>>(
+    row_major_to_col32_quantize_kernel<<<grid1, block1, 0, stream>>>(
       input,
       (char4*)output,
       m,
       n,
       repeat,
-      num_streams);
+      1);
   } else {
      dim3 grid((m + 31) / 32, (n + 31) / 32);
      dim3 block(32, 32);
 
     int repeat = 1;
 
-    row_major_to_col32_quantize_kernel<<<grid, block, 0, stream>>>(
+    row_major_to_col32_quantize_kernel<<<grid1, block1, 0, stream>>>(
       input,
       (char4*)output,
       m,
@@ -334,10 +334,10 @@ public:
             //         cudaStreamWaitEvent(dev_ctx_.stream(), stream_events[i+1], 0));
             // Reduce
             // ...
-            VLOG(1) << "REDUCE";
-            int block = 1024;
-            int grid = (m_ * n_ * 4 + block - 1) / block;
-            reduce<<<grid, block, 0, dev_ctx_.stream()>>>(output_tmp->data<int32_t>(), m_, n_, 4);
+            // VLOG(1) << "REDUCE";
+            // int block = 1024;
+            // int grid = (m_ * n_ * 4 + block - 1) / block;
+            // reduce<<<grid, block, 0, dev_ctx_.stream()>>>(output_tmp->data<int32_t>(), m_, n_, 4);
 
         } else {
             helpers_[0] -> GEMM(input_tmp->data<int8_t>(), weight->data<int8_t>(), output_tmp->data<int32_t>(), dev_ctx_.stream());
