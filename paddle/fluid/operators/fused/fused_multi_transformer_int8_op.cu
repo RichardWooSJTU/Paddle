@@ -1180,18 +1180,22 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 
     cudaStream_t* streams = const_cast<cudaStream_t*>(c_streams);
     static cudaEvent_t stream_events[5];
-#ifndef USE_GEMMEX
+
     if (!stream_events[0]) {
       for (int i = 0; i < 5; ++i)
         cudaEventCreateWithFlags(&stream_events[i], cudaEventDisableTiming);
     }
-#endif
 #ifdef USE_GEMMEX
-    static cublasHandle_t handle;
+    static cublasHandle_t main_handle;
+    static cublasHandle_t sub_handles[4];
     static bool flag = false;
     if (!flag) {
-      dyl::cublasCreate(&handle);
-      dyl::cublasSetStream(handle, dev_ctx.stream());
+      dyl::cublasCreate(&main_handle);
+      dyl::cublasSetStream(main_handle, dev_ctx.stream());
+      for (int i = 0; i < 4; ++i) {
+        dyl::cublasCreate(&sub_handles[i]);
+        dyl::cublasSetStream(sub_handles[i], streams[i]);
+      }
       flag = true;
     }
 #endif
@@ -1508,7 +1512,7 @@ PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(debug_events[1], dev_ctx.stream()));
       // qkv_compute.ComputeForward(
       //     qkv_weights[i], buf1, &input_workspace, bias, &qkv_out, &output_workspace, &qkv_out);
       qkv_compute.ComputeForward(
-            &weight_tmp, buf1, &input_workspace, bias, &qkv_out, &output_workspace, &qkv_out, streams, stream_events, handle);
+            &weight_tmp, buf1, &input_workspace, bias, &qkv_out, &output_workspace, &qkv_out, streams, stream_events, main_handle, sub_handles);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(1) << "step2";
 #endif
@@ -1602,7 +1606,7 @@ PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(debug_events[3], dev_ctx.stream()));
       // step4. out_linear
       out_linear_compute.ComputeForward(
           // out_linear_weights[i], &fmha_out, &input_workspace, nullptr,  buf1, &output_workspace,nullptr);
-          &weight_tmp, &fmha_out, &input_workspace, nullptr,  buf1, &output_workspace,nullptr, streams, stream_events, handle);
+          &weight_tmp, &fmha_out, &input_workspace, nullptr,  buf1, &output_workspace,nullptr, streams, stream_events, main_handle, sub_handles);
       AllReduce<T>(*buf1, ring_id, dev_ctx);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(1) << "step4";
@@ -1642,7 +1646,7 @@ PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(debug_events[5], dev_ctx.stream()));
       // step6. ffn matmul1
       ffn1_linear_compute.ComputeForward(
           // ffn1_weights[i],  buf1, &input_workspace, nullptr, &ffn1_out, &output_workspace, nullptr);
-          &weight_tmp,  buf1, &input_workspace, nullptr, &ffn1_out, &output_workspace, nullptr, streams, stream_events, handle);
+          &weight_tmp,  buf1, &input_workspace, nullptr, &ffn1_out, &output_workspace, nullptr, streams, stream_events, main_handle, sub_handles);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(1) << "step6";
 #endif
@@ -1667,7 +1671,7 @@ PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(debug_events[7], dev_ctx.stream()));
       // step8. ffn matmul2
       ffn2_linear_compute.ComputeForward(
           // ffn2_weights[i],  &ffn1_dropout_out, &input_workspace, nullptr, buf1, &output_workspace, nullptr);
-          &weight_tmp,  &ffn1_dropout_out, &input_workspace, nullptr, buf1, &output_workspace, nullptr, streams, stream_events, handle);
+          &weight_tmp,  &ffn1_dropout_out, &input_workspace, nullptr, buf1, &output_workspace, nullptr, streams, stream_events, main_handle, sub_handles);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(1) << "step8.0";
 #endif

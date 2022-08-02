@@ -113,7 +113,8 @@ public:
                         framework::Tensor* bias_out,
                         cudaStream_t* streams,
                         cudaEvent_t* stream_events,
-                        cublasHandle_t handle){
+                        cublasHandle_t main_handle,
+                        cublasHandle_t* sub_handles){
         int m = m_, k = k_, n = n_;
         VLOG(1) << "m=" << m_ << "k=" << k_ << "n=" << n_;
         // CBLAS_TRANSPOSE transA = CblasNoTrans;
@@ -140,28 +141,57 @@ public:
         cublasOperation_t transa = CUBLAS_OP_T;
         cublasOperation_t transb = CUBLAS_OP_N;
         cublasStatus_t status;
-        status = dyl::cublasGemmEx(handle,
-            transa,
-            transb,
-            m,
-            // n,
-            n,
-            // m,
-            k,
-            &alpha,
-            input_tmp->data<int8_t>(),
-            CUDA_R_8I,
-            k,
-            weight->data<int8_t>(),
-            CUDA_R_8I,
-            k,
-            &beta,
-            output_tmp->data<int32_t>(),
-            CUDA_R_32I,
-            m,
-            CUBLAS_COMPUTE_32I,
-            algo);
-        PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasGemmEx"));
+        if (k_ == 4 * n_ && k_ == 16384) {
+            PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
+            for (int i = 0; i < 4; ++i) {
+                status = dyl::cublasGemmEx(sub_handles[i],
+                    transa,
+                    transb,
+                    m,
+                    // n,
+                    n,
+                    // m,
+                    k/4,
+                    &alpha,
+                    input_tmp->data<int8_t>(),
+                    CUDA_R_8I,
+                    k/4,
+                    weight->data<int8_t>(),
+                    CUDA_R_8I,
+                    k/4,
+                    &beta,
+                    output_tmp->data<int32_t>(),
+                    CUDA_R_32I,
+                    m,
+                    CUBLAS_COMPUTE_32I,
+                    algo);
+                PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasGemmEx"));
+            }
+            PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
+        } else {
+            status = dyl::cublasGemmEx(main_handle,
+                transa,
+                transb,
+                m,
+                // n,
+                n,
+                // m,
+                k,
+                &alpha,
+                input_tmp->data<int8_t>(),
+                CUDA_R_8I,
+                k,
+                weight->data<int8_t>(),
+                CUDA_R_8I,
+                k,
+                &beta,
+                output_tmp->data<int32_t>(),
+                CUDA_R_32I,
+                m,
+                CUBLAS_COMPUTE_32I,
+                algo);
+            PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasGemmEx"));
+        }
         // col32_to_row_major_dequantize_kernelLauncher<T>(output_tmp->data<int32_t>(), 
         //                                                 output->data<T>(), 
         //                                                 m_, n_, 
