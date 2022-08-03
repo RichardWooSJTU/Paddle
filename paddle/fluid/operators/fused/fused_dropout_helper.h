@@ -162,6 +162,29 @@ class FusedDropoutHelper {
                                            ctx);
   }
 
+    // out = residual + dropout( src + bias )
+  void ResidualDropoutBiasDQ(const platform::CUDADeviceContext& ctx,
+                           const int32_t* src,
+                           const T* residual,
+                           const T* bias,
+                           T* out,
+                           MaskType* mask) {
+    auto increment = GetIncrement(ctx);
+    LaunchResidualDropoutBiasDQ<T, MaskType>(rows_,
+                                           cols_,
+                                           increment,
+                                           dropout_param_.seed,
+                                           dropout_param_.dropout_prob,
+                                           dropout_param_.is_test,
+                                           dropout_param_.is_upscale_in_train,
+                                           src,
+                                           residual,
+                                           bias,
+                                           mask,
+                                           out,
+                                           ctx);
+  }
+
   void ResidualDropoutBiasGrad(const platform::CUDADeviceContext& ctx,
                                const T* d_out,
                                const MaskType* mask,
@@ -215,6 +238,52 @@ class FusedDropoutHelper {
     } else if (act_method == "relu") {
       phi::funcs::ReluFunctor<T> relu;
       LaunchDropoutActBias<T, MaskType, phi::funcs::ReluFunctor<T>>(
+          relu,
+          dropout_param_.seed,
+          rows_,
+          cols_,
+          increment,
+          dropout_param_.dropout_prob,
+          dropout_param_.is_upscale_in_train,
+          dropout_param_.is_test,
+          src,
+          bias,
+          out,
+          mask,
+          ctx);
+    } else {
+      PADDLE_THROW(platform::errors::InvalidArgument(
+          "Currently only supports gelu or relu activation functions!"));
+    }
+  }
+
+    // out = dropout(activation(src + bias))
+  void DropoutActBiasQDQ(const platform::CUDADeviceContext& ctx,
+                      const int32_t* src,
+                      const T* bias,
+                      const std::string& act_method,
+                      int8_t* out,
+                      MaskType* mask) {
+    auto increment = GetIncrement(ctx);
+    if (act_method == "gelu") {
+      GeluFunctor<T> gelu;
+      LaunchDropoutActBiasQDQ<T, MaskType, GeluFunctor<T>>(
+          gelu,
+          dropout_param_.seed,
+          rows_,
+          cols_,
+          dropout_param_.increment,
+          dropout_param_.dropout_prob,
+          dropout_param_.is_upscale_in_train,
+          dropout_param_.is_test,
+          src,
+          bias,
+          out,
+          mask,
+          ctx);
+    } else if (act_method == "relu") {
+      phi::funcs::ReluFunctor<T> relu;
+      LaunchDropoutActBiasQDQ<T, MaskType, phi::funcs::ReluFunctor<T>>(
           relu,
           dropout_param_.seed,
           rows_,
@@ -370,6 +439,135 @@ class FusedDropoutLayerNormHelper : public FusedDropoutHelper<T, MaskType> {
     int increment = ((this->cols_ - 1) / (threads * vec_size) + 1) * vec_size;
     increment = this->dropout_param_.UpdateSeedAndIncrement(ctx, increment);
     LaunchLayernormResidualDropoutBias<T, MaskType, U, is_same_type>(
+        this->rows_,
+        this->cols_,
+        increment,
+        this->dropout_param_.seed,
+        this->dropout_param_.dropout_prob,
+        epsilon_,
+        this->dropout_param_.is_upscale_in_train,
+        this->dropout_param_.is_test,
+        src,
+        residual,
+        bias,
+        gamma,
+        beta,
+        mask,
+        dropout_out,
+        out,
+        mean,
+        variance,
+        ctx);
+  }
+
+    // out = layernorm(residual + dropout(src + bias))
+  template <typename P = LayerNormParamType<T>, bool is_same_type = false>
+  void LayernormResidualDropoutBiasQ(const platform::CUDADeviceContext& ctx,
+                                    const T* src,
+                                    const T* residual,
+                                    const T* bias,
+                                    const P* gamma,
+                                    const P* beta,
+                                    T* dropout_out,
+                                    MaskType* mask,
+                                    int8_t* out,
+                                    LayerNormParamType<T>* mean,
+                                    LayerNormParamType<T>* variance) {
+    using U = LayerNormParamType<T>;
+    int vec_size = MAX_CACHE_BYTES / sizeof(T);
+    if (this->cols_ % vec_size != 0) {
+      vec_size = 1;
+    }
+    int threads = GetDesiredBlockDim(this->cols_ / vec_size);
+    int increment = ((this->cols_ - 1) / (threads * vec_size) + 1) * vec_size;
+    increment = this->dropout_param_.UpdateSeedAndIncrement(ctx, increment);
+    LaunchLayernormResidualDropoutBiasQ<T, MaskType, U, is_same_type>(
+        this->rows_,
+        this->cols_,
+        increment,
+        this->dropout_param_.seed,
+        this->dropout_param_.dropout_prob,
+        epsilon_,
+        this->dropout_param_.is_upscale_in_train,
+        this->dropout_param_.is_test,
+        src,
+        residual,
+        bias,
+        gamma,
+        beta,
+        mask,
+        dropout_out,
+        out,
+        mean,
+        variance,
+        ctx);
+  }
+
+      // out = layernorm(residual + dropout(src + bias))
+  template <typename P = LayerNormParamType<T>, bool is_same_type = false>
+  void LayernormResidualDropoutBiasQDQ(const platform::CUDADeviceContext& ctx,
+                                    const int32_t* src,
+                                    const T* residual,
+                                    const T* bias,
+                                    const P* gamma,
+                                    const P* beta,
+                                    T* dropout_out,
+                                    MaskType* mask,
+                                    int8_t* out,
+                                    LayerNormParamType<T>* mean,
+                                    LayerNormParamType<T>* variance) {
+    using U = LayerNormParamType<T>;
+    int vec_size = MAX_CACHE_BYTES / sizeof(T);
+    if (this->cols_ % vec_size != 0) {
+      vec_size = 1;
+    }
+    int threads = GetDesiredBlockDim(this->cols_ / vec_size);
+    int increment = ((this->cols_ - 1) / (threads * vec_size) + 1) * vec_size;
+    increment = this->dropout_param_.UpdateSeedAndIncrement(ctx, increment);
+    LaunchLayernormResidualDropoutBiasQDQ<T, MaskType, U, is_same_type>(
+        this->rows_,
+        this->cols_,
+        increment,
+        this->dropout_param_.seed,
+        this->dropout_param_.dropout_prob,
+        epsilon_,
+        this->dropout_param_.is_upscale_in_train,
+        this->dropout_param_.is_test,
+        src,
+        residual,
+        bias,
+        gamma,
+        beta,
+        mask,
+        dropout_out,
+        out,
+        mean,
+        variance,
+        ctx);
+  }
+
+        // out = layernorm(residual + dropout(src + bias))
+  template <typename P = LayerNormParamType<T>, bool is_same_type = false>
+  void LayernormResidualDropoutBiasDQ(const platform::CUDADeviceContext& ctx,
+                                    const int32_t* src,
+                                    const T* residual,
+                                    const T* bias,
+                                    const P* gamma,
+                                    const P* beta,
+                                    T* dropout_out,
+                                    MaskType* mask,
+                                    T* out,
+                                    LayerNormParamType<T>* mean,
+                                    LayerNormParamType<T>* variance) {
+    using U = LayerNormParamType<T>;
+    int vec_size = MAX_CACHE_BYTES / sizeof(T);
+    if (this->cols_ % vec_size != 0) {
+      vec_size = 1;
+    }
+    int threads = GetDesiredBlockDim(this->cols_ / vec_size);
+    int increment = ((this->cols_ - 1) / (threads * vec_size) + 1) * vec_size;
+    increment = this->dropout_param_.UpdateSeedAndIncrement(ctx, increment);
+    LaunchLayernormResidualDropoutBiasDQ<T, MaskType, U, is_same_type>(
         this->rows_,
         this->cols_,
         increment,
