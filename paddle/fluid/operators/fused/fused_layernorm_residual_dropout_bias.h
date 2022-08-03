@@ -1061,10 +1061,11 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void fused_fast_ln_fwd_quant_dequa
 #pragma unroll
         for (int jt = 0; jt < VecSize; jt++) {
           // dropout(x) + residual
-          x[it][jt] = static_cast<T>(static_cast<float>(x_int32[it][jt]) * 1.0f / 127.0f * 1.0f / 127.0f) + bias[it][jt] *
+          T tmp = (static_cast<T>(static_cast<float>(x_int32[it][jt]) * 1.0f) + bias[it][jt]) *
                           static_cast<T>(mask_vec[it][jt]) * factor +
                       residual[it][jt];
-          xf[it * VecSize + jt] = U(x[it][jt]);
+          x[it][jt] = tmp;
+          xf[it * VecSize + jt] = U(tmp);
         }
       }
     } else {
@@ -1073,8 +1074,9 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void fused_fast_ln_fwd_quant_dequa
 #pragma unroll
         for (int jt = 0; jt < VecSize; jt++) {
           // dropout(x) + residual
-          x[it][jt] = static_cast<T>(static_cast<float>(x_int32[it][jt]) * 1.0f / 127.0f * 1.0f / 127.0f) * static_cast<T>(mask_vec[it][jt]) * factor +
+          T tmp = static_cast<T>(static_cast<float>(x_int32[it][jt]) * 1.0f) * static_cast<T>(mask_vec[it][jt]) * factor +
                       residual[it][jt];
+          x[it][jt] = tmp;
           xf[it * VecSize + jt] = U(x[it][jt]);
         }
       }
@@ -1335,10 +1337,11 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void fused_fast_ln_fwd_dequant_ker
 #pragma unroll
         for (int jt = 0; jt < VecSize; jt++) {
           // dropout(x) + residual
-          x[it][jt] = static_cast<T>(static_cast<float>(x_int32[it][jt]) * 1.0f / 127.0f * 1.0f / 127.0f) + bias[it][jt] *
+          T tmp = (static_cast<T>(static_cast<float>(x_int32[it][jt]) * 1.0f) + bias[it][jt]) *
                           static_cast<T>(mask_vec[it][jt]) * factor +
                       residual[it][jt];
-          xf[it * VecSize + jt] = U(x[it][jt]);
+          x[it][jt] = tmp;
+          xf[it * VecSize + jt] = U(tmp);
         }
       }
     } else {
@@ -1347,9 +1350,10 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void fused_fast_ln_fwd_dequant_ker
 #pragma unroll
         for (int jt = 0; jt < VecSize; jt++) {
           // dropout(x) + residual
-          x[it][jt] = static_cast<T>(static_cast<float>(x_int32[it][jt]) * 1.0f / 127.0f * 1.0f / 127.0f) * static_cast<T>(mask_vec[it][jt]) * factor +
+          T tmp = static_cast<T>(static_cast<float>(x_int32[it][jt]) * 1.0f) * static_cast<T>(mask_vec[it][jt]) * factor +
                       residual[it][jt];
-          xf[it * VecSize + jt] = U(x[it][jt]);
+          x[it][jt] = tmp;
+          xf[it * VecSize + jt] = U(tmp);
         }
       }
     }

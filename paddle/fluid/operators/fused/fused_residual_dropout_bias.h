@@ -178,7 +178,7 @@ __forceinline__ __device__ void FusedResidualDropoutBiasOneThreadQDQ(
 
 #pragma unroll
   for (int ii = 0; ii < VecSize; ii++) {
-    T tmp0 = static_cast<T>(static_cast<float>(src_vec[ii]) * 1.0f / 127.0f * 1.0f / 127.0f);
+    T tmp0 = static_cast<T>(static_cast<float>(src_vec[ii]) * 1.0f);
     T tmp = tmp0 + bias_vec[ii];
     if (Activation) {
       tmp = act_func(tmp);
@@ -269,7 +269,7 @@ __forceinline__ __device__ void FusedResidualDropoutBiasOneThreadDQ(
 
 #pragma unroll
   for (int ii = 0; ii < VecSize; ii++) {
-    T tmp0 = static_cast<T>(static_cast<float>(src_vec[ii]) * 1.0f / 127.0f * 1.0f / 127.0f);
+    T tmp0 = static_cast<T>(static_cast<float>(src_vec[ii]) * 1.0f);
     T tmp = tmp0 + bias_vec[ii];
     if (Activation) {
       tmp = act_func(tmp);
