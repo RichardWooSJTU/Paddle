@@ -1,11 +1,8 @@
 /* Copyright (c) 2018 PaddlePaddle Authors. All Rights Reserved.
-
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
-
     http://www.apache.org/licenses/LICENSE-2.0
-
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -146,8 +143,17 @@ class Graph {
   AttrType &Get(const std::string &attr_name) const {
     if (FLAGS_convert_all_blocks) {
       if (IsMainGraph()) {
-        return GetSubGraph(0)->Get<AttrType>(attr_name);
-        
+        auto sub_graph0 = GetSubGraph(0);
+        PADDLE_ENFORCE_EQ(
+          sub_graph0->Has(attr_name),
+          true,
+          platform::errors::PreconditionNotMet(
+              "%s attribute not registered for current graph.", attr_name));
+        return sub_graph0->Get<AttrType>(attr_name);
+      } else {
+        if (!Has(attr_name)) {
+          return main_graph_->Get<AttrType>(attr_name);
+        }
       }
     }
     PADDLE_ENFORCE_EQ(
@@ -170,10 +176,7 @@ class Graph {
   void Set(const std::string &attr_name, AttrType *attr) {
     if (FLAGS_convert_all_blocks) {
       if (IsMainGraph()) {
-        for(size_t i=0; i<SubGraphsSize(); i++) {
-          GetSubGraph(i)->Set<AttrType>(attr_name, attr);
-        }
-        return;
+        return GetSubGraph(0)->Set<AttrType>(attr_name, attr);
       }
     }
     PADDLE_ENFORCE_EQ(
@@ -182,15 +185,10 @@ class Graph {
         platform::errors::AlreadyExists(
             "The attribute %s to be set already exists in the graph.",
             attr_name));
-    VLOG(1) << "set attr " << attr_name;
     attrs_[attr_name] = attr;
     attr_dels_[attr_name] = [attr, attr_name]() {
-      if (attr) {
-        VLOG(3) << "deleting " << attr_name;
-        auto* attr_nonconst = const_cast<AttrType *>(attr);
-        delete attr_nonconst;
-        attr_nonconst = nullptr;
-      }
+      VLOG(3) << "deleting " << attr_name;
+      delete attr;
     };
   }
 

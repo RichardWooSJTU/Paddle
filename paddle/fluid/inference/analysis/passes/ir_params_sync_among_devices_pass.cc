@@ -134,7 +134,7 @@ void IrParamsSyncAmongDevicesPass::CopyParamsToGpu(Argument *argument) {
           var->IsType<framework::Tensor>()) {
         auto *t = var->GetMutable<framework::LoDTensor>();
         auto var_data_type = var_node->Var()->GetDataType();
-        VLOG(5) << "var_name is " << var_name << ", data type is "
+        VLOG(1) << "var_name is " << var_name << ", data type is "
                 << var_data_type;
         if (var_data_type == paddle::framework::proto::VarType::FP16) {
           framework::Tensor half_tensor;

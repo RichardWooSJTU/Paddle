@@ -1316,6 +1316,9 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     auto out_linear_weights = ctx.MultiInput<Tensor>("OutLinearW");
     auto out_linear_biases = ctx.MultiInput<Tensor>("OutLinearBias");
     int ring_id = ctx.Attr<int>("ring_id");
+    // debuggggg
+    VLOG(1) << "[DEBUG]out_linear_weights dtype is " << out_linear_weights[0]->dtype();
+    // debuggggg
     // (transA, transB, compute_bias) = (false, false, false)
 #ifdef TRANSPOSE_GEMM
     AttnMatmulINT8<T> out_linear_compute(

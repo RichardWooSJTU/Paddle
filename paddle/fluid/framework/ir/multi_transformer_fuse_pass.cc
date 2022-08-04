@@ -149,17 +149,36 @@ void MultiTransformerFusePass::ApplyImpl(Graph* g) const {
             const std::vector<std::string> &ffn2_weight = op->Input("FFN2Weight");
             for (auto n : ffn2_weight) std::cout << n << " ";
             std::cout << std::endl;
-
+            bool trans_qkvw = true;
+            if (op->HasAttr("trans_qkvw")) {
+                trans_qkvw = PADDLE_GET_CONST(bool, op->GetAttr("trans_qkvw"));
+                PADDLE_ENFORCE_EQ(trans_qkvw, true, 
+                    platform::errors::InvalidArgument("fused_multi_transformer_int8 do not support not trans_qkvw"));
+            }
             //Find var
             for (int i = 0; i < qkv_w.size(); i++) {
                 auto name = qkv_w[i];
                 
-                auto* weight_tensor = scope->FindVar(name)->GetMutable<LoDTensor>();
+                // auto* weight_tensor = scope->FindVar(name)->GetMutable<LoDTensor>();
+                auto* weight_var = scope->FindVar(name);
+                PADDLE_ENFORCE_NOT_NULL(
+                    weight_var,
+                    platform::errors::NotFound(
+                        "The Weight variable [%s] of fused_multi_transformer_int8 is not found.",
+                        name));
+                // Set var_data_type
+                auto* weight_tensor = weight_var->GetMutable<LoDTensor>();
                 auto qkv_w_dims = weight_tensor->dims();
+
+                
                 if (i == 0) {
+                    // Main graph has transformed weight data, sub graph cannot gain origin info
+                    // Set info as graph attr
                     if (qkv_w_dims.size() != 1) {
-                        g->Set("num_head_" + name, new int(static_cast<int>(qkv_w_dims[1])));
-                        g->Set("dim_head_" + name, new int(static_cast<int>(qkv_w_dims[2])));
+                        int num_head = qkv_w_dims[1];
+                        int dim_head = qkv_w_dims[2];
+                        g->Set("num_head_" + name, new int(static_cast<int>(num_head)));
+                        g->Set("dim_head_" + name, new int(static_cast<int>(dim_head)));
                     }
                     int num_head = g->Get<int>("num_head_" + name);
                     int dim_head = g->Get<int>("dim_head_" + name);
@@ -176,7 +195,13 @@ void MultiTransformerFusePass::ApplyImpl(Graph* g) const {
             for (int i = 0; i < out_linear_w.size(); i++) {
                 auto name = out_linear_w[i];
                 
-                auto* weight_tensor = scope->FindVar(name)->GetMutable<LoDTensor>();
+                auto* weight_var = scope->FindVar(name);
+                PADDLE_ENFORCE_NOT_NULL(
+                    weight_var,
+                    platform::errors::NotFound(
+                        "The Weight variable [%s] of fused_multi_transformer_int8 is not found.",
+                        name));
+                auto* weight_tensor = weight_var->GetMutable<LoDTensor>();
                 auto dim = weight_tensor->dims();
                 if (dim.size() == 1) break;
                 int k = dim[0], n = dim[1];
@@ -185,7 +210,13 @@ void MultiTransformerFusePass::ApplyImpl(Graph* g) const {
             for (int i = 0; i < ffn1_weight.size(); i++) {
                 auto name = ffn1_weight[i];
                 
-                auto* weight_tensor = scope->FindVar(name)->GetMutable<LoDTensor>();
+                auto* weight_var = scope->FindVar(name);
+                PADDLE_ENFORCE_NOT_NULL(
+                    weight_var,
+                    platform::errors::NotFound(
+                        "The Weight variable [%s] of fused_multi_transformer_int8 is not found.",
+                        name));
+                auto* weight_tensor = weight_var->GetMutable<LoDTensor>();
                 auto dim = weight_tensor->dims();
                 if (i == 0) {
                     if (dim.size() != 1) {
@@ -202,12 +233,31 @@ void MultiTransformerFusePass::ApplyImpl(Graph* g) const {
             for (int i = 0; i < ffn2_weight.size(); i++) {
                 auto name = ffn2_weight[i];
                 
-                auto* weight_tensor = scope->FindVar(name)->GetMutable<LoDTensor>();
+                auto* weight_var = scope->FindVar(name);
+                PADDLE_ENFORCE_NOT_NULL(
+                    weight_var,
+                    platform::errors::NotFound(
+                        "The Weight variable [%s] of fused_multi_transformer_int8 is not found.",
+                        name));
+                auto* weight_tensor = weight_var->GetMutable<LoDTensor>();
                 auto dim = weight_tensor->dims();
                 if (dim.size() == 1) break;
                 int k = dim[0], n = dim[1];
                 PrepareWeights(weight_tensor, k, n);
             } 
+
+            //Set var datatype
+            std::unordered_set<std::string> weights_name_set(qkv_w.begin(), qkv_w.end());
+            weights_name_set.insert(out_linear_w.begin(), out_linear_w.end());
+            weights_name_set.insert(ffn1_weight.begin(), ffn1_weight.end());
+            weights_name_set.insert(ffn2_weight.begin(), ffn2_weight.end());
+            for (auto *var_node : node->inputs) {
+                auto var_name = var_node->Var()->Name();
+                if (weights_name_set.count(var_name) != 0) {
+                    VLOG(1) << "set " << var_name << " var_node datatype as int8";
+                    var_node->Var()->SetDataType(paddle::framework::proto::VarType::INT8);
+                }
+            }
         }
     }
 
@@ -217,8 +267,9 @@ void MultiTransformerFusePass::PrepareWeights(framework::Tensor* weight_tensor, 
     PADDLE_ENFORCE_NOT_NULL(
         weight_tensor,
         platform::errors::InvalidArgument("weight tensor should not be nullptr"));
-    // quantize transpose transform
-    // qkv_w do not need transpose
+    // quantize 
+    // transpose: just transpose qkv_w 
+    // transform: use API
     framework::Tensor weight_tensor_tmp;
     auto place  =  weight_tensor->place();
     framework::TensorCopy(*weight_tensor, place, &weight_tensor_tmp);
