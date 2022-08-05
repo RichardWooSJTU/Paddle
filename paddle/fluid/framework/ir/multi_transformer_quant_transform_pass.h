@@ -57,13 +57,15 @@ namespace ir {
 // };
 // } // namespace patterns
 
-class MultiTransformerFusePass : public FusePassBase {
+class MultiTransformerQuantTransformPass : public FusePassBase {
     public:
-     MultiTransformerFusePass();
-     virtual ~MultiTransformerFusePass(){}
+     MultiTransformerQuantTransformPass();
+     virtual ~MultiTransformerQuantTransformPass(){}
     protected:
      void ApplyImpl(Graph* g) const override;
-     void PrepareWeights(framework::Tensor* weight_tensor, int k, int n) const;
+     void PrepareWeights(framework::Tensor* weight_tensor, int k, int n, 
+                                                std::vector<float>& weight_scale, int var_type, bool trans) const;
+
 };
 
 }  // namespace ir

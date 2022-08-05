@@ -301,6 +301,30 @@ class FusedMultiTransformerINT8OpMaker
     AddAttr<int>(
         "dim_ffn","dim_ffn").SetDefault(0);
 
+    AddAttr<std::vector<float>>(
+        "qkv_in_scale", "qkv_in_scale").SetDefault({});
+
+    AddAttr<std::vector<float>>(
+        "out_linear_in_scale", "out_linear_in_scale").SetDefault({});
+    
+    AddAttr<std::vector<float>>(
+        "ffn1_in_scale", "ffn1_in_scale").SetDefault({});
+
+    AddAttr<std::vector<float>>(
+        "ffn2_in_scale", "ffn2_in_scale").SetDefault({});
+
+    // AddAttr<std::vector<std::vector<float>>>(
+    //     "qkv_out_scale", "qkv_out_scale").SetDefault({});
+
+    // AddAttr<std::vector<std::vector<float>>>(
+    //     "out_linear_out_scale", "out_linear_out_scale").SetDefault({});
+
+    // AddAttr<std::vector<std::vector<float>>>(
+    //     "ffn1_out_scale", "ffn1_out_scale").SetDefault({});
+
+    // AddAttr<std::vector<std::vector<float>>>(
+    //     "ffn2_out_scale", "ffn2_out_scale").SetDefault({});
+
     AddComment(R"DOC(fused multi transformer layers op)DOC");
   }
 };

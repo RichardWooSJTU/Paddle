@@ -16,7 +16,6 @@ limitations under the License. */
 #include "paddle/fluid/operators/fused/cublasLt_helper.h"
 #include "paddle/fluid/platform/float16.h"
 
-#define TRANSPOSE_GEMM
 #define MULTI_STREAM
 
 namespace paddle {
@@ -148,11 +147,7 @@ public:
         k_(k),
         compute_bias_(compute_bias) {
 #ifdef MULTI_STREAM
-#ifdef TRANSPOSE_GEMM
-        if (k_ == 4 * m_ && k_ == 16384) {
-#else
         if (k_ == 4 * n_ && k_ == 16384) {
-#endif
 #else
         if (false) {
 #endif
@@ -196,12 +191,7 @@ public:
         VLOG(1) << "[DEBUG] row_major_to_col32_quantize_kernelLauncher";
         row_major_to_col32_quantize_kernelLauncher<T>(input->data<T>(), 
                                                       input_tmp->data<int8_t>(), 
-#ifdef TRANSPOSE_GEMM
-                                                        n_, k_,
-#else
-                                                        m_, k_, 
-#endif
-                                                      
+                                                        m_, k_,                     
                                                       dev_ctx_.stream());
 
         VLOG(1) << "[DEBUG] GEMM";
@@ -209,37 +199,18 @@ public:
         VLOG(1) << "weight_tmp " << weight->numel() << " dtype " << weight->dtype();
         VLOG(1) << "output_tmp " << output_tmp->numel() << " dtype " << output_tmp->dtype();
 #ifdef MULTI_STREAM
-#ifdef TRANSPOSE_GEMM
-        if (k_ == 4 * m_ && k_ == 16384) {
-#else
         if (k_ == 4 * n_ && k_ == 16384) {
-#endif
 #else
         if (false) {
 #endif
             // Synchronize stream
-            // PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(stream_events[0], dev_ctx_.stream()));
             PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
            
             // Use multi stream calculation
             for (int i = 0; i < 4; ++i) {
-                // PADDLE_ENFORCE_GPU_SUCCESS(
-                //     cudaStreamWaitEvent(streams[i], stream_events[0], 0));
                 helpers_[i] -> GEMM(input_tmp->data<int8_t>(), weight->data<int8_t>(), output_tmp->data<int32_t>(), streams[i]);
-                // helpers_[i] -> GEMM(input_tmp->data<int8_t>(), weight->data<int8_t>(), output_tmp->data<int32_t>(), dev_ctx_.stream());
-                // PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(stream_events[i+1], streams[i]));
             }
             PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
-            // for (int i = 0; i < 4; ++i)
-            //     PADDLE_ENFORCE_GPU_SUCCESS(
-            //         cudaStreamWaitEvent(dev_ctx_.stream(), stream_events[i+1], 0));
-            
-            // Reduce
-            // ...
-            VLOG(1) << "REDUCE";
-            int block = 1024;
-            int grid = (m_ * n_ * 4 + block - 1) / block;
-            reduce<<<grid, block, 0, dev_ctx_.stream()>>>(output_tmp->data<int32_t>(), m_, n_, 4);
 
         } else {
             helpers_[0] -> GEMM(input_tmp->data<int8_t>(), weight->data<int8_t>(), output_tmp->data<int32_t>(), dev_ctx_.stream());
@@ -251,11 +222,7 @@ public:
         VLOG(1) << "[DEBUG] col32_to_row_major_dequantize_kernelLauncher";
         col32_to_row_major_dequantize_kernelLauncher<T>(output_tmp->data<int32_t>(), 
                                                         output->data<T>(), 
-#ifdef TRANSPOSE_GEMM
-                                                        n_, m_,
-#else
                                                         m_, n_, 
-#endif
                                                         dev_ctx_.stream());
 
         if (compute_bias_) {
@@ -283,37 +250,17 @@ public:
         VLOG(1) << "weight " << weight->numel() << " dtype " << weight->dtype();
         VLOG(1) << "output " << output->numel() << " dtype " << output->dtype();
 #ifdef MULTI_STREAM
-#ifdef TRANSPOSE_GEMM
-        if (k_ == 4 * m_ && k_ == 16384) {
-#else
         if (k_ == 4 * n_ && k_ == 16384) {
-#endif
 #else
         if (false) {
 #endif
-            // Synchronize stream
-            // PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(stream_events[0], dev_ctx_.stream()));
             PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
            
             // Use multi stream calculation
             for (int i = 0; i < 4; ++i) {
-                // PADDLE_ENFORCE_GPU_SUCCESS(
-                //     cudaStreamWaitEvent(streams[i], stream_events[0], 0));
                 helpers_[i] -> GEMM(input->data<int8_t>(), weight->data<int8_t>(), output->data<int32_t>(), streams[i]);
-                // helpers_[i] -> GEMM(input_tmp->data<int8_t>(), weight->data<int8_t>(), output_tmp->data<int32_t>(), dev_ctx_.stream());
-                // PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(stream_events[i+1], streams[i]));
             }
             PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
-            // for (int i = 0; i < 4; ++i)
-            //     PADDLE_ENFORCE_GPU_SUCCESS(
-            //         cudaStreamWaitEvent(dev_ctx_.stream(), stream_events[i+1], 0));
-            
-            // Reduce
-            // ...
-            VLOG(1) << "REDUCE";
-            int block = 1024;
-            int grid = (m_ * n_ * 4 + block - 1) / block;
-            reduce<<<grid, block, 0, dev_ctx_.stream()>>>(output->data<int32_t>(), m_, n_, 4);
 
         } else {
             helpers_[0] -> GEMM(input->data<int8_t>(), weight->data<int8_t>(), output->data<int32_t>(), dev_ctx_.stream());
@@ -345,37 +292,18 @@ public:
         VLOG(1) << "weight_tmp " << weight->numel() << " dtype " << weight->dtype();
         VLOG(1) << "output_tmp " << output_tmp->numel() << " dtype " << output_tmp->dtype();
 #ifdef MULTI_STREAM
-#ifdef TRANSPOSE_GEMM
-        if (k_ == 4 * m_ && k_ == 16384) {
-#else
         if (k_ == 4 * n_ && k_ == 16384) {
-#endif
 #else
         if (false) {
 #endif
             // Synchronize stream
-            // PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(stream_events[0], dev_ctx_.stream()));
             PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
            
             // Use multi stream calculation
             for (int i = 0; i < 4; ++i) {
-                // PADDLE_ENFORCE_GPU_SUCCESS(
-                //     cudaStreamWaitEvent(streams[i], stream_events[0], 0));
                 helpers_[i] -> GEMM(input->data<int8_t>(), weight->data<int8_t>(), output_tmp->data<int32_t>(), streams[i]);
-                // helpers_[i] -> GEMM(input_tmp->data<int8_t>(), weight->data<int8_t>(), output_tmp->data<int32_t>(), dev_ctx_.stream());
-                // PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(stream_events[i+1], streams[i]));
             }
             PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
-            // for (int i = 0; i < 4; ++i)
-            //     PADDLE_ENFORCE_GPU_SUCCESS(
-            //         cudaStreamWaitEvent(dev_ctx_.stream(), stream_events[i+1], 0));
-            
-            // Reduce
-            // ...
-            VLOG(1) << "REDUCE";
-            int block = 1024;
-            int grid = (m_ * n_ * 4 + block - 1) / block;
-            reduce<<<grid, block, 0, dev_ctx_.stream()>>>(output_tmp->data<int32_t>(), m_, n_, 4);
 
         } else {
             helpers_[0] -> GEMM(input->data<int8_t>(), weight->data<int8_t>(), output_tmp->data<int32_t>(), dev_ctx_.stream());
@@ -387,11 +315,7 @@ public:
         VLOG(1) << "[DEBUG] col32_to_row_major_dequantize_kernelLauncher";
         col32_to_row_major_dequantize_kernelLauncher<T>(output_tmp->data<int32_t>(), 
                                                         output->data<T>(), 
-#ifdef TRANSPOSE_GEMM
-                                                        n_, m_,
-#else
                                                         m_, n_, 
-#endif
                                                         dev_ctx_.stream());
 
         if (compute_bias_) {
@@ -420,12 +344,7 @@ public:
         VLOG(1) << "[DEBUG] row_major_to_col32_quantize_kernelLauncher";
         row_major_to_col32_quantize_kernelLauncher<T>(input->data<T>(), 
                                                       input_tmp->data<int8_t>(), 
-#ifdef TRANSPOSE_GEMM
-                                                        n_, k_,
-#else
                                                         m_, k_, 
-#endif
-                                                      
                                                       dev_ctx_.stream());
 
         VLOG(1) << "[DEBUG] GEMM";
@@ -433,37 +352,18 @@ public:
         VLOG(1) << "weight_tmp " << weight->numel() << " dtype " << weight->dtype();
         VLOG(1) << "output_tmp " << output->numel() << " dtype " << output->dtype();
 #ifdef MULTI_STREAM
-#ifdef TRANSPOSE_GEMM
-        if (k_ == 4 * m_ && k_ == 16384) {
-#else
         if (k_ == 4 * n_ && k_ == 16384) {
-#endif
 #else
         if (false) {
 #endif
             // Synchronize stream
-            // PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(stream_events[0], dev_ctx_.stream()));
             PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
            
             // Use multi stream calculation
             for (int i = 0; i < 4; ++i) {
-                // PADDLE_ENFORCE_GPU_SUCCESS(
-                //     cudaStreamWaitEvent(streams[i], stream_events[0], 0));
                 helpers_[i] -> GEMM(input_tmp->data<int8_t>(), weight->data<int8_t>(), output->data<int32_t>(), streams[i]);
-                // helpers_[i] -> GEMM(input_tmp->data<int8_t>(), weight->data<int8_t>(), output_tmp->data<int32_t>(), dev_ctx_.stream());
-                // PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(stream_events[i+1], streams[i]));
             }
             PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
-            // for (int i = 0; i < 4; ++i)
-            //     PADDLE_ENFORCE_GPU_SUCCESS(
-            //         cudaStreamWaitEvent(dev_ctx_.stream(), stream_events[i+1], 0));
-            
-            // Reduce
-            // ...
-            VLOG(1) << "REDUCE";
-            int block = 1024;
-            int grid = (m_ * n_ * 4 + block - 1) / block;
-            reduce<<<grid, block, 0, dev_ctx_.stream()>>>(output->data<int32_t>(), m_, n_, 4);
 
         } else {
             helpers_[0] -> GEMM(input_tmp->data<int8_t>(), weight->data<int8_t>(), output->data<int32_t>(), dev_ctx_.stream());

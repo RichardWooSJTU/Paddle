@@ -471,11 +471,13 @@ void TensorCopySync(const Tensor& src,
   src.check_memory_size();
   dst->Resize(src.dims());
   dst->set_layout(src.layout());
+  VLOG(4) << "dst->set_layout(src.layout());";
 #ifdef PADDLE_WITH_MKLDNN
   dst->set_format(src.format());
 #endif
   auto src_place = src.place();
   auto src_ptr = src.data();
+  VLOG(4) << "ready to mutable_data";
   auto dst_ptr = dst->mutable_data(dst_place, src.dtype());
   VLOG(4) << "src:" << src_ptr << ", dst:" << dst_ptr;
 

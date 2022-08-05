@@ -12,105 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "paddle/fluid/framework/ir/multi_transformer_fuse_pass.h"
+#include "paddle/fluid/framework/ir/multi_transformer_quant_transform_pass.h"
+#include "paddle/fluid/operators/fused/cublasLt_helper.h"
+#include "paddle/fluid/platform/float16.h"
 
 namespace paddle {
 namespace framework {
 namespace ir {
 
 
-// namespace patterns {
-
-// PDNode* MultiTransformer::operator()() {
-//     /*
-//      * Create old subgraph's *PDNode* including op PDNode and tensor PDNode
-//      */
-    
-//     auto *op = pattern->NewNode(fused_multi_transformer_int8_repr())->assert_is_op("fused_multi_transformer_int8");
-//     auto *ln_scale_var = pattern->NewNode(ln_scale_repr())
-//                         ->AsInput()
-//                         ->assert_is_persistable_var()
-//                         ->assert_is_op_input("fused_multi_transformer_int8", "LnScale");
-//     auto *ln_bias_var = pattern->NewNode(ln_bias_repr())
-//                         ->AsInput()
-//                         ->assert_is_persistable_var()
-//                         ->assert_is_op_input("fused_multi_transformer_int8", "LnBias");
-//     auto *qkv_w_var = pattern->NewNode(qkv_w_repr())
-//                         ->AsInput()
-//                         ->assert_is_persistable_var()
-//                         ->assert_is_op_input("fused_multi_transformer_int8", "QKVW");
-//     auto *qkv_bias_var = pattern->NewNode(qkv_bias_repr())
-//                 ->AsInput()
-//                 ->assert_is_persistable_var()
-//                 ->assert_is_op_input("fused_multi_transformer_int8", "QKVBias");
-//     auto *cache_kv_var = pattern->NewNode(cache_kv_repr())
-//                 ->AsInput()
-//                 ->assert_is_persistable_var()
-//                 ->assert_is_op_input("fused_multi_transformer_int8", "CacheKV");
-//     auto *time_stamp_var = pattern->NewNode(time_stamp_repr())
-//                 ->AsInput()
-//                 ->assert_is_persistable_var()
-//                 ->assert_is_op_input("fused_multi_transformer_int8", "TimeStep");
-//     auto *src_mask_var = pattern->NewNode(src_mask_repr())
-//                 ->AsInput()
-//                 ->assert_is_persistable_var()
-//                 ->assert_is_op_input("fused_multi_transformer_int8", "SrcMask");
-//     auto *out_linear_w_var = pattern->NewNode(out_linear_w_repr())
-//                 ->AsInput()
-//                 ->assert_is_persistable_var()
-//                 ->assert_is_op_input("fused_multi_transformer_int8", "OutLinearW");
-//     auto *out_linear_bias_var = pattern->NewNode(out_linear_bias_repr())
-//                         ->AsInput()
-//                         ->assert_is_persistable_var()
-//                         ->assert_is_op_input("fused_multi_transformer_int8", "OutLinearBias");
-//     auto *ffn_ln_scale_var = pattern->NewNode(ffn_ln_scale_repr())
-//                 ->AsInput()
-//                 ->assert_is_persistable_var()
-//                 ->assert_is_op_input("fused_multi_transformer_int8", "FFNLnScale");
-//     auto *ffn_ln_bias_var = pattern->NewNode(ffn_ln_bias_repr())
-//                 ->AsInput()
-//                 ->assert_is_persistable_var()
-//                 ->assert_is_op_input("fused_multi_transformer_int8", "FFNLnBias");
-//     auto *ffn1_weight_var = pattern->NewNode(ffn1_weight_repr())
-//                 ->AsInput()
-//                 ->assert_is_persistable_var()
-//                 ->assert_is_op_input("fused_multi_transformer_int8", "FFN1Weight");
-//     auto *ffn1_bias_var = pattern->NewNode(ffn1_bias_repr())
-//                         ->AsInput()
-//                         ->assert_is_persistable_var()
-//                         ->assert_is_op_input("fused_multi_transformer_int8", "FFN1Bias");
-//     auto *ffn2_weight_var = pattern->NewNode(ffn2_weight_repr())
-//                 ->AsInput()
-//                 ->assert_is_persistable_var()
-//                 ->assert_is_op_input("fused_multi_transformer_int8", "FFN2Weight");
-//     auto *ffn2_bias_var = pattern->NewNode(ffn2_bias_repr())
-//                         ->AsInput()
-//                         ->assert_is_persistable_var()
-//                         ->assert_is_op_input("fused_multi_transformer_int8", "FFN2Bias");
-
-//     auto *cache_kv_out_var = pattern->NewNode(cache_kv_out_repr())
-//                         ->AsOutput()
-//                         ->assert_is_op_output("fused_multi_transformer_int8");
-//     auto *out_var = pattern->NewNode(out_repr())
-//                         ->AsOutput()
-//                         ->assert_is_op_output("fused_multi_transformer_int8");
-//     op->LinksFrom({ln_scale_var,ln_bias_var,qkv_w_var,qkv_bias_var,cache_kv_var,
-//                     time_stamp_var,src_mask_var,out_linear_w_var,out_linear_bias_var,
-//                     ffn_ln_scale_var,ffn_ln_bias_var,ffn1_weight_var,ffn1_bias_var,ffn2_weight_var,ffn2_bias_var,
-//                     cache_kv_out_var,out_var}).LinksTo({cache_kv_out_var, out_var});
-//     return out_var;
-
-// }
-
-
-
-// } // namespace patterns
 
 // Constructor: Some of passes invoke AddOpCompat to state which ops will be included (compatible). Here we do not need it
-MultiTransformerFusePass::MultiTransformerFusePass(){}
+MultiTransformerQuantTransformPass::MultiTransformerQuantTransformPass(){}
 
 // ApplyImpl: delete some ops of graph and add some new
-void MultiTransformerFusePass::ApplyImpl(Graph* g) const {
+void MultiTransformerQuantTransformPass::ApplyImpl(Graph* g) const {
     /*
      * 1. construct GraphPatternDetector, which is used to manage a global patten in this pass
      * 2. construct input *PDNode*, this node should be stated as input and add new assert to a assert set
@@ -132,6 +48,8 @@ void MultiTransformerFusePass::ApplyImpl(Graph* g) const {
       scope,
       platform::errors::Fatal(
           "During the multi_transformer_fuse pass, The scope should not be null."));
+
+    
 
     for (auto *node : g->Nodes()) {
         if (node->IsOp() && node->Op()-> Type() == "fused_multi_transformer_int8") {
@@ -155,7 +73,31 @@ void MultiTransformerFusePass::ApplyImpl(Graph* g) const {
                 PADDLE_ENFORCE_EQ(trans_qkvw, true, 
                     platform::errors::InvalidArgument("fused_multi_transformer_int8 do not support not trans_qkvw"));
             }
+
+            int var_type = -1;
+            //Get Origin datatype / Set var datatype
+            std::unordered_set<std::string> weights_name_set(qkv_w.begin(), qkv_w.end());
+            weights_name_set.insert(out_linear_w.begin(), out_linear_w.end());
+            weights_name_set.insert(ffn1_weight.begin(), ffn1_weight.end());
+            weights_name_set.insert(ffn2_weight.begin(), ffn2_weight.end());
+            for (auto *var_node : node->inputs) {
+                auto var_name = var_node->Var()->Name();
+                if (weights_name_set.count(var_name) != 0) {
+                    if (var_type==-1) {
+                        var_type = var_node->Var()->GetDataType();
+                    }
+                    VLOG(1) << "set " << var_name << " var_node datatype as int8";
+                    var_node->Var()->SetDataType(paddle::framework::proto::VarType::INT8);
+                }
+            }
+
             //Find var
+            std::vector<float> in_scale(qkv_w.size(), 1.0f);
+            std::vector<std::vector<float>> out_scales(qkv_w.size());
+            if (op->HasAttr("qkv_in_scale")) {
+                in_scale = PADDLE_GET_CONST(std::vector<float>, op->GetAttr("qkv_in_scale"));
+            } 
+
             for (int i = 0; i < qkv_w.size(); i++) {
                 auto name = qkv_w[i];
                 
@@ -190,8 +132,20 @@ void MultiTransformerFusePass::ApplyImpl(Graph* g) const {
                 // for cublasLt
                 int k = qkv_w_dims[3], n = qkv_w_dims[0] * qkv_w_dims[1] * qkv_w_dims[2];
                 VLOG(1) << "prepare weight " << name;
-                PrepareWeights(weight_tensor, k, n);
+                std::vector<float> weight_scale(n), out_scale(n);
+                PrepareWeights(weight_tensor, k, n, weight_scale, var_type, true);
+                for (int j = 0; j < n; ++j) {
+                    out_scale[j] = weight_scale[j] * in_scale[i];
+                }
+                out_scales[i] = out_scale;
             } 
+            // op->SetAttr("qkv_out_scale", out_scales);
+
+            if (op->HasAttr("out_linear_in_scale")) {
+                in_scale = PADDLE_GET_CONST(std::vector<float>, op->GetAttr("out_linear_in_scale"));
+            } 
+
+
             for (int i = 0; i < out_linear_w.size(); i++) {
                 auto name = out_linear_w[i];
                 
@@ -205,8 +159,20 @@ void MultiTransformerFusePass::ApplyImpl(Graph* g) const {
                 auto dim = weight_tensor->dims();
                 if (dim.size() == 1) break;
                 int k = dim[0], n = dim[1];
-                PrepareWeights(weight_tensor, k, n);
+
+                std::vector<float> weight_scale(n), out_scale(n);
+                PrepareWeights(weight_tensor, k, n, weight_scale, var_type, false);
+                for (int j = 0; j < n; ++j) {
+                    out_scale[j] = weight_scale[j] * in_scale[i];
+                }
+                out_scales[i] = out_scale;
             } 
+            // op->SetAttr("out_linear_out_scale", out_scales);
+
+            if (op->HasAttr("ffn1_in_scale")) {
+                in_scale = PADDLE_GET_CONST(std::vector<float>, op->GetAttr("ffn1_in_scale"));
+            } 
+
             for (int i = 0; i < ffn1_weight.size(); i++) {
                 auto name = ffn1_weight[i];
                 
@@ -228,7 +194,17 @@ void MultiTransformerFusePass::ApplyImpl(Graph* g) const {
                     if (dim.size() == 1) break;
                 }
                 int k = dim[0], n = dim[1];
-                PrepareWeights(weight_tensor, k, n);
+                std::vector<float> weight_scale(n), out_scale(n);
+                PrepareWeights(weight_tensor, k, n, weight_scale, var_type, false);
+                for (int j = 0; j < n; ++j) {
+                    out_scale[j] = weight_scale[j] * in_scale[i];
+                }
+                out_scales[i] = out_scale;
+            } 
+            // op->SetAttr("ffn1_out_scale", out_scales);
+
+            if (op->HasAttr("ffn2_in_scale")) {
+                in_scale = PADDLE_GET_CONST(std::vector<float>, op->GetAttr("ffn2_in_scale"));
             } 
             for (int i = 0; i < ffn2_weight.size(); i++) {
                 auto name = ffn2_weight[i];
@@ -243,41 +219,91 @@ void MultiTransformerFusePass::ApplyImpl(Graph* g) const {
                 auto dim = weight_tensor->dims();
                 if (dim.size() == 1) break;
                 int k = dim[0], n = dim[1];
-                PrepareWeights(weight_tensor, k, n);
-            } 
-
-            //Set var datatype
-            std::unordered_set<std::string> weights_name_set(qkv_w.begin(), qkv_w.end());
-            weights_name_set.insert(out_linear_w.begin(), out_linear_w.end());
-            weights_name_set.insert(ffn1_weight.begin(), ffn1_weight.end());
-            weights_name_set.insert(ffn2_weight.begin(), ffn2_weight.end());
-            for (auto *var_node : node->inputs) {
-                auto var_name = var_node->Var()->Name();
-                if (weights_name_set.count(var_name) != 0) {
-                    VLOG(1) << "set " << var_name << " var_node datatype as int8";
-                    var_node->Var()->SetDataType(paddle::framework::proto::VarType::INT8);
+                std::vector<float> weight_scale(n), out_scale(n);
+                PrepareWeights(weight_tensor, k, n, weight_scale, var_type, false);
+                for (int j = 0; j < n; ++j) {
+                    out_scale[j] = weight_scale[j] * in_scale[i];
                 }
-            }
+                out_scales[i] = out_scale;
+            } 
+            // op->SetAttr("ffn2_out_scale", out_scales);
+            
         }
     }
 
 }
 
-void MultiTransformerFusePass::PrepareWeights(framework::Tensor* weight_tensor, int k, int n) const {
+template <typename T>
+static inline T abs(T x) {
+    return x > 0 ? x : -x;
+}
+
+static inline int8_t cast_int8(float a) {
+    return static_cast<int8_t>(a+0.5f);
+}
+
+template <typename T>
+static void LayerwiseQuantize(const T* src, int8_t* dst, std::vector<float>& scale, int k, int n, bool trans) {
+    std::vector<T> max_value(n, static_cast<T>(0.0f));
+    if (!trans) {
+        for (int i = 0; i < k; ++i) {
+            for (int j = 0; j < n; ++j) {
+                T v = abs(src[i * n + j]);
+                if ( v > max_value[j]) max_value[j] = v;
+            }
+        }
+        for (int i = 0; i < n; ++i) {
+            scale[i] = 127.0f / static_cast<float>(max_value[i]);
+        }
+        for (int i = 0; i < k; ++i) {
+            for (int j = 0; j < n; ++j) {
+                dst[i * n + j] = cast_int8(static_cast<float>(src[i * n + j]) * scale[j]);
+            }
+        }
+    } else {
+        for (int i = 0; i < n; ++i) {
+            for (int j = 0; j < k; ++j) {
+                T v = abs(src[i * k + j]);
+                if ( v > max_value[i]) max_value[i] = v;
+            }
+        }
+        for (int i = 0; i < n; ++i) {
+            scale[i] = 127.0f / static_cast<float>(max_value[i]);
+        }
+         for (int i = 0; i < n; ++i) {
+            for (int j = 0; j < k; ++j) {
+               dst[j * n + i] = cast_int8(static_cast<float>(src[i * k + j]) * scale[i]);
+            }
+        }
+    }
+}
+
+void MultiTransformerQuantTransformPass::PrepareWeights(framework::Tensor* weight_tensor, int k, int n, 
+                                                std::vector<float>& weight_scale, int var_type, bool trans) const {
     PADDLE_ENFORCE_NOT_NULL(
         weight_tensor,
         platform::errors::InvalidArgument("weight tensor should not be nullptr"));
-    // quantize 
-    // transpose: just transpose qkv_w 
-    // transform: use API
-    framework::Tensor weight_tensor_tmp;
+    // quantize /  transpose: just transpose qkv_w
     auto place  =  weight_tensor->place();
-    framework::TensorCopy(*weight_tensor, place, &weight_tensor_tmp);
+    framework::Tensor weight_tensor_tmp;
+    weight_tensor_tmp.mutable_data<int8_t>({k*n}, place);
 
-    int ldbtransform = 32 * ((n + 8 - 1) / 8) * 8;
+    // if (var_type == paddle::framework::proto::VarType::FP32) {
+    //     LayerwiseQuantize(weight_tensor->data<float>(), weight_tensor_tmp.data<int8_t>(), weight_scale, k, n, trans);
+    // } else if (var_type == paddle::framework::proto::VarType::FP16) {
+    //     LayerwiseQuantize(weight_tensor->data<platform::float16>(), weight_tensor_tmp.data<int8_t>(), weight_scale, k, n, trans);
+    // }
+    
+    // transform: use API
+    int ldbtransform = 32 * n; //COL32
     weight_tensor->Resize({(k + 32 - 1) / 32 * ldbtransform});
-    VLOG(1) << "weight_tensor->mutable_data";
     weight_tensor->mutable_data<int8_t>(place);
+
+    std::unique_ptr<operators::CublasLtTransformHelper> transform_helper = 
+        std::make_unique<operators::CublasLtTransformHelper>(k, n, operators::CublasDataLayout::COL32, false);
+    
+    // transform_helper->Transform(weight_tensor_tmp.data<int8_t>(), weight_tensor->data<int8_t>());
+
 }
 
 
@@ -289,5 +315,5 @@ void MultiTransformerFusePass::PrepareWeights(framework::Tensor* weight_tensor, 
 }  // namespace framework
 }  // namespace paddle
 
-REGISTER_PASS(multi_transformer_fuse_pass,
-              paddle::framework::ir::MultiTransformerFusePass);
+REGISTER_PASS(multi_transformer_quant_transform_pass,
+              paddle::framework::ir::MultiTransformerQuantTransformPass);

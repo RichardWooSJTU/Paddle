@@ -156,7 +156,7 @@ const std::vector<std::string> kLiteSubgraphPasses({
 const std::vector<std::string> kGpuLowerPrecisionPasses{
     // "conv_bn_fuse_pass",
     // "conv_eltwiseadd_bn_fuse_pass",
-    "multi_transformer_fuse_pass",
+    "multi_transformer_quant_transform_pass",
     // "conv_bn_fuse_pass",
     // "conv_eltwiseadd_bn_fuse_pass",
     // "conv_elementwise_add_act_fuse_pass",
@@ -207,7 +207,7 @@ GpuPassStrategy::GpuPassStrategy() : PassStrategy({}) {
         // "conv_elementwise_add_fuse_pass",      //
 #endif                                         //
         // "transpose_flatten_concat_fuse_pass",  //
-        "multi_transformer_fuse_pass", //
+        "multi_transformer_quant_transform_pass", //
         // following pass should be located in the last, since it will
         // work on all fused ops.
         "runtime_context_cache_pass"
