@@ -46,6 +46,7 @@ using Tensor = framework::Tensor;
 // for debug
 // #define _DEBUG_FUSED_MULTI_TRANSFORMER
 // #define _DEBUG_TIME
+#define _DEBUG_NCCL_ALLREDUCE
 
 
 template <typename T>
@@ -84,6 +85,24 @@ static void AllReduce(framework::Tensor &tensor,  // NOLINT
       "PaddlePaddle should compile with NCCL or RCCL when used tensor model "
       "parallel op."));
 #endif
+}
+
+template <typename T>
+static void print_tensor(framework::Tensor &tensor,  // NOLINT,
+                      int num,
+                      const platform::CUDADeviceContext &ctx) {
+    int64_t numel = tensor.numel();
+    const T *data = tensor.data<T>();
+    auto place = ctx.GetPlace();
+    auto stream = ctx.stream();
+
+    std::vector<T> data_h(numel);
+    cudaMemcpy(data_h.data(), data, data_h.size() * sizeof(T), cudaMemcpyDeviceToHost);
+    std::cout << "tensor: " << data_h.size();
+    for (int i=0; i<num; i++) {
+        std::cout << " " << static_cast<T>(data_h.at(i));
+    }
+    std::cout << std::endl;
 }
 
 namespace {
@@ -1546,6 +1565,10 @@ cudaDeviceSynchronize();
       out_linear_compute.ComputeForwardWoDQ(
           out_linear_weights[i], &fmha_out, &input_workspace, nullptr,  &output_workspace, nullptr, streams, stream_events);
 
+#ifdef _DEBUG_NCCL_ALLREDUCE
+      cudaDeviceSynchronize();
+      print_tensor<int32_t>(output_workspace, 100, dev_ctx);
+#endif
       if (time_step) { // decoder stage
         AllReduce<int32_t>(output_workspace, ring_id, bsz * 1 * num_head * dim_head, dev_ctx);
       } else if (cache_kv_out) { // context stage
@@ -1553,6 +1576,10 @@ cudaDeviceSynchronize();
       } else { // non-generation situations
         AllReduce<int32_t>(output_workspace, ring_id, bsz * seq_len * num_head * dim_head, dev_ctx);
       }
+#ifdef _DEBUG_NCCL_ALLREDUCE
+      cudaDeviceSynchronize();
+      print_tensor<int32_t>(output_workspace, 100, dev_ctx);
+#endif
       
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(1) << "step4";
