@@ -51,6 +51,7 @@ using Tensor = framework::Tensor;
 template <typename T>
 static void AllReduce(framework::Tensor &tensor,  // NOLINT
                       const int ring_id,
+                      const int count,
                       const platform::CUDADeviceContext &ctx) {
   if (ring_id == -1) return;
 #if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL)
@@ -76,7 +77,7 @@ static void AllReduce(framework::Tensor &tensor,  // NOLINT
     auto comm = platform::NCCLCommContext::Instance().Get(ring_id, place);
     auto stream = ctx.stream();
     PADDLE_ENFORCE_GPU_SUCCESS(platform::dynload::ncclAllReduce(
-        sendbuff, recvbuff, numel, dtype, ncclSum, comm->comm(), stream));
+        sendbuff, recvbuff, count, dtype, ncclSum, comm->comm(), stream));
   }
 #else
   PADDLE_THROW(platform::errors::Unimplemented(
@@ -1545,7 +1546,14 @@ cudaDeviceSynchronize();
       out_linear_compute.ComputeForwardWoDQ(
           out_linear_weights[i], &fmha_out, &input_workspace, nullptr,  &output_workspace, nullptr, streams, stream_events);
 
-      AllReduce<int32_t>(output_workspace, ring_id, dev_ctx);
+      if (time_step) { // decoder stage
+        AllReduce<int32_t>(output_workspace, ring_id, bsz * 1 * num_head * dim_head, dev_ctx);
+      } else if (cache_kv_out) { // context stage
+        AllReduce<int32_t>(output_workspace, ring_id, bsz * seq_len * num_head * dim_head, dev_ctx);
+      } else { // non-generation situations
+        AllReduce<int32_t>(output_workspace, ring_id, bsz * seq_len * num_head * dim_head, dev_ctx);
+      }
+      
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(1) << "step4";
 #endif
@@ -1631,8 +1639,16 @@ cudaDeviceSynchronize();
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(1) << "step8.0";
 #endif
-
-      AllReduce<int32_t>(output_workspace, ring_id, dev_ctx);
+      
+      if (time_step) { // decoder stage
+        AllReduce<int32_t>(output_workspace, ring_id, bsz * 1 * num_head * dim_head, dev_ctx);
+      } else if (cache_kv_out) { // context stage
+        AllReduce<int32_t>(output_workspace, ring_id, bsz * seq_len * num_head * dim_head, dev_ctx);
+      } else { // non-generation situations
+        AllReduce<int32_t>(output_workspace, ring_id, bsz * seq_len * num_head * dim_head, dev_ctx);
+      }
+      
+      
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(1) << "step8.1";
 #endif
