@@ -16,8 +16,6 @@ limitations under the License. */
 #include "paddle/fluid/operators/fused/cublasLt_helper.h"
 #include "paddle/fluid/platform/float16.h"
 
-#define MULTI_STREAM
-
 namespace paddle {
 namespace operators {
 
@@ -146,33 +144,9 @@ public:
         n_(n),
         k_(k),
         compute_bias_(compute_bias) {
-#ifdef MULTI_STREAM
-        if (k_ == 4 * n_ && k_ == 16384) {
-#else
-        if (false) {
-#endif
-            // Use multi stream calculation
-            for (int i = 0; i < 4; ++i) {
-                auto helper = std::make_shared<CublasLtHelper>(m, k / 4, n);
-                helpers_.emplace_back(helper);
-            }
-        } else {
+
             auto helper = std::make_shared<CublasLtHelper>(m, k, n);
             helpers_.emplace_back(helper);
-        }
-
-        //quantize and transpose weight
-        // for (const framework::Tensor* weight_ct : weight_cts) {
-        //     framework::Tensor weight_tmp;
-        //     framework::Tensor* weight_t = const_cast<framework::Tensor*>(weight_ct);
-        //     framework::TensorCopy(*weight_t, place, &weight_tmp);
-
-        //     weight_t->Resize({k*n});
-        //     weight_t->mutable_data<int8_t>(place);
-            
-        //     VLOG(1) << "[DEBUG] TransformB";
-        //     helper_->TransformB(weight_t, place, dev_ctx_.stream());
-        // }
     }
     ~AttnMatmulINT8(){}
     void ComputeForward(const framework::Tensor* weight, // [int8] which has been transformed in pass
@@ -188,42 +162,22 @@ public:
         int m = m_, k = k_, n = n_;
         //quant transpose A
         float scale = 1.0f;
-        VLOG(1) << "[DEBUG] row_major_to_col32_quantize_kernelLauncher";
-        row_major_to_col32_quantize_kernelLauncher<T>(input->data<T>(), 
-                                                      input_tmp->data<int8_t>(), 
-                                                        m_, k_,                     
-                                                      dev_ctx_.stream());
-
+        // elementwise mul
+        
+    
         VLOG(1) << "[DEBUG] GEMM";
         VLOG(1) << "input_tmp " << input_tmp->numel() << " dtype " << input_tmp->dtype();
         VLOG(1) << "weight_tmp " << weight->numel() << " dtype " << weight->dtype();
         VLOG(1) << "output_tmp " << output_tmp->numel() << " dtype " << output_tmp->dtype();
-#ifdef MULTI_STREAM
-        if (k_ == 4 * n_ && k_ == 16384) {
-#else
-        if (false) {
-#endif
-            // Synchronize stream
-            PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
-           
-            // Use multi stream calculation
-            for (int i = 0; i < 4; ++i) {
-                helpers_[i] -> GEMM(input_tmp->data<int8_t>(), weight->data<int8_t>(), output_tmp->data<int32_t>(), streams[i]);
-            }
-            PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
 
-        } else {
-            helpers_[0] -> GEMM(input_tmp->data<int8_t>(), weight->data<int8_t>(), output_tmp->data<int32_t>(), dev_ctx_.stream());
-        }
-
+        helpers_[0] -> GEMM(input_tmp->data<int8_t>(), weight->data<int8_t>(), output_tmp->data<int32_t>(), dev_ctx_.stream());
         
 
         //dequant C
         VLOG(1) << "[DEBUG] col32_to_row_major_dequantize_kernelLauncher";
-        col32_to_row_major_dequantize_kernelLauncher<T>(output_tmp->data<int32_t>(), 
-                                                        output->data<T>(), 
-                                                        m_, n_, 
-                                                        dev_ctx_.stream());
+        
+        // dequant kernel
+
 
         if (compute_bias_) {
             // bias_out = output + bias
@@ -236,7 +190,7 @@ public:
         }
     }
 
-    void ComputeForwardWoQDQ(const framework::Tensor* weight, // [int8] which has been transformed in pass
+     void ComputeForwardWoQDQ(const framework::Tensor* weight, // [int8] which has been transformed in pass
                         framework::Tensor* input, // [int8]  workspace
                         const framework::Tensor* bias, //[fp16/32] 
                         framework::Tensor* output, //[int32]  workspace
@@ -249,22 +203,9 @@ public:
         VLOG(1) << "input " << input->numel() << " dtype " << input->dtype();
         VLOG(1) << "weight " << weight->numel() << " dtype " << weight->dtype();
         VLOG(1) << "output " << output->numel() << " dtype " << output->dtype();
-#ifdef MULTI_STREAM
-        if (k_ == 4 * n_ && k_ == 16384) {
-#else
-        if (false) {
-#endif
-            PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
-           
-            // Use multi stream calculation
-            for (int i = 0; i < 4; ++i) {
-                helpers_[i] -> GEMM(input->data<int8_t>(), weight->data<int8_t>(), output->data<int32_t>(), streams[i]);
-            }
-            PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
 
-        } else {
-            helpers_[0] -> GEMM(input->data<int8_t>(), weight->data<int8_t>(), output->data<int32_t>(), dev_ctx_.stream());
-        }
+        helpers_[0] -> GEMM(input->data<int8_t>(), weight->data<int8_t>(), output->data<int32_t>(), dev_ctx_.stream());
+        
 
         if (compute_bias_) {
             // bias_out = output + bias
@@ -291,25 +232,9 @@ public:
         VLOG(1) << "input_tmp " << input->numel() << " dtype " << input->dtype();
         VLOG(1) << "weight_tmp " << weight->numel() << " dtype " << weight->dtype();
         VLOG(1) << "output_tmp " << output_tmp->numel() << " dtype " << output_tmp->dtype();
-#ifdef MULTI_STREAM
-        if (k_ == 4 * n_ && k_ == 16384) {
-#else
-        if (false) {
-#endif
-            // Synchronize stream
-            PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
-           
-            // Use multi stream calculation
-            for (int i = 0; i < 4; ++i) {
-                helpers_[i] -> GEMM(input->data<int8_t>(), weight->data<int8_t>(), output_tmp->data<int32_t>(), streams[i]);
-            }
-            PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
 
-        } else {
-            helpers_[0] -> GEMM(input->data<int8_t>(), weight->data<int8_t>(), output_tmp->data<int32_t>(), dev_ctx_.stream());
-        }
+        helpers_[0] -> GEMM(input->data<int8_t>(), weight->data<int8_t>(), output_tmp->data<int32_t>(), dev_ctx_.stream());
 
-        
 
         //dequant C
         VLOG(1) << "[DEBUG] col32_to_row_major_dequantize_kernelLauncher";
@@ -351,23 +276,9 @@ public:
         VLOG(1) << "input_tmp " << input_tmp->numel() << " dtype " << input_tmp->dtype();
         VLOG(1) << "weight_tmp " << weight->numel() << " dtype " << weight->dtype();
         VLOG(1) << "output_tmp " << output->numel() << " dtype " << output->dtype();
-#ifdef MULTI_STREAM
-        if (k_ == 4 * n_ && k_ == 16384) {
-#else
-        if (false) {
-#endif
-            // Synchronize stream
-            PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
-           
-            // Use multi stream calculation
-            for (int i = 0; i < 4; ++i) {
-                helpers_[i] -> GEMM(input_tmp->data<int8_t>(), weight->data<int8_t>(), output->data<int32_t>(), streams[i]);
-            }
-            PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
 
-        } else {
-            helpers_[0] -> GEMM(input_tmp->data<int8_t>(), weight->data<int8_t>(), output->data<int32_t>(), dev_ctx_.stream());
-        }
+        helpers_[0] -> GEMM(input_tmp->data<int8_t>(), weight->data<int8_t>(), output->data<int32_t>(), dev_ctx_.stream());
+        
 
         //TODO: add bias in in col32-int32 format
         if (compute_bias_) {
@@ -380,6 +291,7 @@ public:
             PADDLE_ENFORCE_EQ(cudaGetLastError(), cudaSuccess, platform::errors::Fatal("Add"));
         }
     }
+
 
 private:
     const platform::CUDADeviceContext& dev_ctx_;

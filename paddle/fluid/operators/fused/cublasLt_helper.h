@@ -80,74 +80,39 @@ class CublasLtHelper {
 public:
     CublasLtHelper(int m, int k, int n):alpha_(1), beta_(0), m_(m), k_(k), n_(n) {
         cublasStatus_t status;
+        // handle and matmul desc
         status = dyl::cublasLtCreate(&handle_);
         PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatrixLayoutCreate"));
 
         status = dyl::cublasLtMatmulDescCreate(&matmul_desc_, CUBLAS_COMPUTE_32I, CUDA_R_32I);
         PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatmulDescCreate"));
         cublasOperation_t op_transpose = CUBLAS_OP_T;
-        status = dyl::cublasLtMatmulDescSetAttribute(matmul_desc_, CUBLASLT_MATMUL_DESC_TRANSB, &op_transpose, sizeof(op_transpose));
+        status = dyl::cublasLtMatmulDescSetAttribute(matmul_desc_, CUBLASLT_MATMUL_DESC_TRANSA, &op_transpose, sizeof(op_transpose));
         PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatmulDescSetAttribute"));
 
-        cublasLtOrder_t order_COL32 = CUBLASLT_ORDER_COL32;
-        cublasLtOrder_t order_matrixB;
-#if CUDA_VERSION >= 11000
-        use_4r4_ = true;
-#elif 
-        use_4r4_ = false;
-#endif
-        if (use_4r4_) {
-            order_matrixB = CUBLASLT_ORDER_COL32_2R_4R4;
-        } else {
-            order_matrixB = CUBLASLT_ORDER_COL4_4R2_8C;
-        }
-        // For better performance, we use B^T * A^T = C^T
-        // So order_matrixB will be used for A
-
-        int ldbtransform = 32 * n;
-        int ldatransform;
-        if (use_4r4_) {
-            ldatransform = 32 * ((m + 32 - 1) / 32) * 32;
-        } else {
-            ldatransform = 32 * ((m + 8 - 1) / 8) * 8;
-        }
-        int ldctransform = 32 * n;
-        
-        status = dyl::cublasLtMatrixLayoutCreate(&B_transform_desc_, CUDA_R_8I, n, k, ldbtransform);
-        PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatrixLayoutCreate"));
-        VLOG(1) << "B_transform_desc_ " << (k + 32 - 1) / 32 * ldbtransform;
-        status = dyl::cublasLtMatrixLayoutSetAttribute(B_transform_desc_, 
-                                                       CUBLASLT_MATRIX_LAYOUT_ORDER, 
-                                                        &order_COL32, sizeof(order_COL32));
+        // matrix desc
+        status = dyl::cublasLtMatrixLayoutCreate(&B_desc_, CUDA_R_8I, k, n, k);
         PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatrixLayoutCreate"));
 
-        
-        status = dyl::cublasLtMatrixLayoutCreate(&A_transform_desc_, CUDA_R_8I, m, k, ldatransform);
+        status = dyl::cublasLtMatrixLayoutCreate(&A_desc_, CUDA_R_8I, k, m, k);
         PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatrixLayoutCreate"));
-        VLOG(1) << "A_transform_desc_" << (k + 32 - 1) / 32 * ldatransform;
-        status = dyl::cublasLtMatrixLayoutSetAttribute(A_transform_desc_, CUBLASLT_MATRIX_LAYOUT_ORDER, &order_matrixB, sizeof(order_matrixB));
-        PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatrixLayoutSetAttribute"));
 
-        
-        status = dyl::cublasLtMatrixLayoutCreate(&C_transform_desc_, CUDA_R_32I, n, m, ldctransform);
+        status = dyl::cublasLtMatrixLayoutCreate(&C_desc_, CUDA_R_32I, n, m, n);
         PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatrixLayoutCreate"));
-        VLOG(1) << "C_transform_desc_" << (m + 32 - 1) / 32 * ldctransform;
-        status = dyl::cublasLtMatrixLayoutSetAttribute(C_transform_desc_, CUBLASLT_MATRIX_LAYOUT_ORDER, &order_COL32, sizeof(order_COL32));
-        PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatrixLayoutSetAttribute"));
     }
     ~CublasLtHelper() {
         if (handle_) dyl::cublasLtDestroy(handle_);
         if (matmul_desc_) dyl::cublasLtMatmulDescDestroy(matmul_desc_);
-        if (A_transform_desc_) dyl::cublasLtMatrixLayoutDestroy(A_transform_desc_);
-        if (B_transform_desc_) dyl::cublasLtMatrixLayoutDestroy(B_transform_desc_);
-        if (C_transform_desc_) dyl::cublasLtMatrixLayoutDestroy(C_transform_desc_);
+        if (A_desc_) dyl::cublasLtMatrixLayoutDestroy(A_desc_);
+        if (B_desc_) dyl::cublasLtMatrixLayoutDestroy(B_desc_);
+        if (C_desc_) dyl::cublasLtMatrixLayoutDestroy(C_desc_);
 
     }
 
     void GEMM(
-        int8_t* A_transform_data_dev,
-        const int8_t* B_transform_data_dev,
-        int32_t* C_transform_data_dev,
+        int8_t* A_dev,
+        const int8_t* B_dev,
+        int32_t* C_dev,
         cudaStream_t stream) {
 
 
@@ -157,24 +122,14 @@ public:
         VLOG(1) << "m=" << m_ << "k=" << k_ << "n=" << n_;
 
         cublasLtMatmulAlgo_t algo;
-        int algoId;
-        if (use_4r4_) {
-            algoId = 7;
-        } else {
-            algoId = 6;
-        }
-        int swizzle = 1;
+        int algoId = 21;
+        int swizzle = 0;
         int customOption = 0;
-        int tile = 20;
+        int tile = 15;
         int splitK_val = 0;
         int reductionScheme = 0;
 #if CUDA_VERSION >= 11000
-        int stages;
-        if (use_4r4_) {
-            stages = 15;
-        } else {
-            stages = 13;
-        }
+        int stages = 23;
 #endif
         // std::stringstream ss;
         // ss << n_ << ": " << k_ << ": " << m_;
@@ -211,15 +166,15 @@ public:
         status = dyl::cublasLtMatmul(handle_,
                                     matmul_desc_,
                                     &alpha_,
-                                    B_transform_data_dev,
-                                    B_transform_desc_,
-                                    A_transform_data_dev,
-                                    A_transform_desc_,
+                                    B_dev,
+                                    B_desc_,
+                                    A_dev,
+                                    A_desc_,
                                     &beta_,
-                                    C_transform_data_dev,
-                                    C_transform_desc_,
-                                    C_transform_data_dev,
-                                    C_transform_desc_,
+                                    C_dev,
+                                    C_desc_,
+                                    C_dev,
+                                    C_desc_,
                                     &algo,
                                     nullptr,
                                     0,
@@ -232,104 +187,98 @@ public:
 private:
     cublasLtHandle_t handle_;
     cublasLtMatmulDesc_t matmul_desc_;
-    cublasLtMatrixLayout_t A_transform_desc_;
-    cublasLtMatrixLayout_t B_transform_desc_;
-    cublasLtMatrixLayout_t C_transform_desc_;
+    cublasLtMatrixLayout_t A_desc_;
+    cublasLtMatrixLayout_t B_desc_;
+    cublasLtMatrixLayout_t C_desc_;
     int32_t alpha_;
     int32_t beta_;
 
     int m_;
     int k_;
     int n_;
-    int ldatransform_;
-    int ldbtransform_;
-    int ldctransform_;
-
-    bool use_4r4_;
 
 };
-class CublasLtTransformHelper {
-public:
-    // col_major: true: m/n is set correctly for col-major matrix
-    CublasLtTransformHelper(int m, int n, CublasDataLayout layout, bool col_major){
-        cublasStatus_t status;
-        status = dyl::cublasLtCreate(&handle_);
-        PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatrixLayoutCreate"));
+// class CublasLtTransformHelper {
+// public:
+//     // col_major: true: m/n is set correctly for col-major matrix
+//     CublasLtTransformHelper(int m, int n, CublasDataLayout layout, bool col_major){
+//         cublasStatus_t status;
+//         status = dyl::cublasLtCreate(&handle_);
+//         PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatrixLayoutCreate"));
         
-        cublasOperation_t op_transpose = CUBLAS_OP_N;
+//         cublasOperation_t op_transpose = CUBLAS_OP_N;
 
-        status = dyl::cublasLtMatrixTransformDescCreate(&transform_desc_, CUDA_R_32F);
-        status = dyl::cublasLtMatrixTransformDescSetAttribute(transform_desc_, CUBLASLT_MATRIX_TRANSFORM_DESC_TRANSA, &op_transpose, sizeof(op_transpose)); 
-        PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatrixTransformDescSetAttribute"));
+//         status = dyl::cublasLtMatrixTransformDescCreate(&transform_desc_, CUDA_R_32F);
+//         status = dyl::cublasLtMatrixTransformDescSetAttribute(transform_desc_, CUBLASLT_MATRIX_DESC_TRANSA, &op_transpose, sizeof(op_transpose)); 
+//         PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatrixTransformDescSetAttribute"));
 
-        if (col_major) {
-            status = dyl::cublasLtMatrixLayoutCreate(&mat_desc_, CUDA_R_8I, m, n, m);    
-        } else {
-            status = dyl::cublasLtMatrixLayoutCreate(&mat_desc_, CUDA_R_8I, n, m, n);
-        }
+//         if (col_major) {
+//             status = dyl::cublasLtMatrixLayoutCreate(&mat_desc_, CUDA_R_8I, m, n, m);    
+//         } else {
+//             status = dyl::cublasLtMatrixLayoutCreate(&mat_desc_, CUDA_R_8I, n, m, n);
+//         }
         
-        PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatrixLayoutCreate"));
+//         PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatrixLayoutCreate"));
         
-        int ld_transform;
-        cublasLtOrder_t order_COL32 = CUBLASLT_ORDER_COL32;
-        cublasLtOrder_t order_COL32_2R_4R4 = CUBLASLT_ORDER_COL32_2R_4R4;
+//         int ld;
+//         cublasLtOrder_t order_COL32 = CUBLASLT_ORDER_COL32;
+//         cublasLtOrder_t order_COL32_2R_4R4 = CUBLASLT_ORDER_COL32_2R_4R4;
 
-        switch (layout) {
-        case COL32:
-            ld_transform = col_major ? 32 * m : 32 * n;
-            status = dyl::cublasLtMatrixLayoutCreate(&mat_transform_desc_, CUDA_R_8I, n, m, ld_transform);
-            status = dyl::cublasLtMatrixLayoutSetAttribute(mat_transform_desc_, CUBLASLT_MATRIX_LAYOUT_ORDER, &order_COL32, sizeof(order_COL32));
-            break;
-        case COL32_2R_4R4:
-            ld_transform = col_major ?  32 * ((m + 32 - 1) / 32) * 32 :  32 * ((n + 32 - 1) / 32) * 32;
-            status = dyl::cublasLtMatrixLayoutCreate(&mat_transform_desc_, CUDA_R_8I, n, m, ld_transform);
-            status = dyl::cublasLtMatrixLayoutSetAttribute(mat_transform_desc_, CUBLASLT_MATRIX_LAYOUT_ORDER, &order_COL32_2R_4R4, sizeof(order_COL32_2R_4R4));
-            break;
-        case COL4_4R2_8C:
-        default:
-            // not support
-             PADDLE_THROW(platform::errors::Unimplemented(
-                    "This layout in cublasLt is not supported."));
-        }
-        PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatrixLayoutSetAttribute"));
-    }
+//         switch (layout) {
+//         case COL32:
+//             ld = col_major ? 32 * m : 32 * n;
+//             status = dyl::cublasLtMatrixLayoutCreate(&mat_desc_, CUDA_R_8I, n, m, ld);
+//             status = dyl::cublasLtMatrixLayoutSetAttribute(mat_desc_, CUBLASLT_MATRIX_LAYOUT_ORDER, &order_COL32, sizeof(order_COL32));
+//             break;
+//         case COL32_2R_4R4:
+//             ld = col_major ?  32 * ((m + 32 - 1) / 32) * 32 :  32 * ((n + 32 - 1) / 32) * 32;
+//             status = dyl::cublasLtMatrixLayoutCreate(&mat_desc_, CUDA_R_8I, n, m, ld);
+//             status = dyl::cublasLtMatrixLayoutSetAttribute(mat_desc_, CUBLASLT_MATRIX_LAYOUT_ORDER, &order_COL32_2R_4R4, sizeof(order_COL32_2R_4R4));
+//             break;
+//         case COL4_4R2_8C:
+//         default:
+//             // not support
+//              PADDLE_THROW(platform::errors::Unimplemented(
+//                     "This layout in cublasLt is not supported."));
+//         }
+//         PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatrixLayoutSetAttribute"));
+//     }
 
-    ~CublasLtTransformHelper() {
-        if (handle_) dyl::cublasLtDestroy(handle_);
-        if (transform_desc_) dyl::cublasLtMatrixTransformDescDestroy(transform_desc_);
-        if (mat_desc_) dyl::cublasLtMatrixLayoutDestroy(mat_desc_);
-        if (mat_transform_desc_) dyl::cublasLtMatrixLayoutDestroy(mat_transform_desc_);
-    }
+//     ~CublasLtTransformHelper() {
+//         if (handle_) dyl::cublasLtDestroy(handle_);
+//         if (transform_desc_) dyl::cublasLtMatrixTransformDescDestroy(transform_desc_);
+//         if (mat_desc_) dyl::cublasLtMatrixLayoutDestroy(mat_desc_);
+//         if (mat_desc_) dyl::cublasLtMatrixLayoutDestroy(mat_desc_);
+//     }
 
-    void Transform(const int8_t *src, int8_t *dst) {
-        cublasStatus_t status;
-        float alpha = 1.0f, beta = 0.0f;
+//     void Transform(const int8_t *src, int8_t *dst) {
+//         cublasStatus_t status;
+//         float alpha = 1.0f, beta = 0.0f;
 
-        cudaStream_t stream = 0;
-        PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
-        status = dyl::cublasLtMatrixTransform(handle_, 
-                                        transform_desc_, 
-                                        (void*)&alpha, 
-                                        src, 
-                                        mat_desc_, 
-                                        (void*)&beta, 
-                                        nullptr, 
-                                        nullptr, 
-                                        dst, 
-                                        mat_transform_desc_, stream);
-        PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatrixTransform"));
-        PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
-    }
+//         cudaStream_t stream = 0;
+//         PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
+//         status = dyl::cublasLtMatrixTransform(handle_, 
+//                                         transform_desc_, 
+//                                         (void*)&alpha, 
+//                                         src, 
+//                                         mat_desc_, 
+//                                         (void*)&beta, 
+//                                         nullptr, 
+//                                         nullptr, 
+//                                         dst, 
+//                                         mat_desc_, stream);
+//         PADDLE_ENFORCE_EQ(status, CUBLAS_STATUS_SUCCESS, platform::errors::Fatal("cublasLtMatrixTransform"));
+//         PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
+//     }
 
 
-private:
-    cublasLtHandle_t handle_;
-    cublasLtMatrixTransformDesc_t transform_desc_;
+// private:
+//     cublasLtHandle_t handle_;
+//     cublasLtMatrixTransformDesc_t transform_desc_;
 
-    cublasLtMatrixLayout_t mat_desc_;
-    cublasLtMatrixLayout_t mat_transform_desc_;
+//     cublasLtMatrixLayout_t mat_desc_;
 
-};
+// };
 
 }  // namespace operators
 }  // namespace paddle

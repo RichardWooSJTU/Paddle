@@ -299,8 +299,8 @@ void MultiTransformerQuantTransformPass::PrepareWeights(framework::Tensor* weigh
     weight_tensor->Resize({(k + 32 - 1) / 32 * ldbtransform});
     weight_tensor->mutable_data<int8_t>(place);
 
-    std::unique_ptr<operators::CublasLtTransformHelper> transform_helper = 
-        std::make_unique<operators::CublasLtTransformHelper>(k, n, operators::CublasDataLayout::COL32, false);
+    // std::unique_ptr<operators::CublasLtTransformHelper> transform_helper = 
+    //     std::make_unique<operators::CublasLtTransformHelper>(k, n, operators::CublasDataLayout::COL32, false);
     
     // transform_helper->Transform(weight_tensor_tmp.data<int8_t>(), weight_tensor->data<int8_t>());
 
