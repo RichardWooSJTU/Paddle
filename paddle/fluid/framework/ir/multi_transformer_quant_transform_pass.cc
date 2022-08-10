@@ -93,10 +93,19 @@ void MultiTransformerQuantTransformPass::ApplyImpl(Graph* g) const {
 
             //Find var
             std::vector<float> in_scale(qkv_w.size(), 1.0f);
-            std::vector<std::vector<float>> out_scales(qkv_w.size());
+            // debugggggg
+            op->SetAttr("qkv_in_scale", in_scale);
+            op->SetAttr("out_linear_in_scale", in_scale);
+            op->SetAttr("ffn1_in_scale", in_scale);
+            op->SetAttr("ffn2_in_scale", in_scale);
+            // debugggggg
+
             if (op->HasAttr("qkv_in_scale")) {
                 in_scale = PADDLE_GET_CONST(std::vector<float>, op->GetAttr("qkv_in_scale"));
             } 
+
+            LoDTensor qkv_out_scale, out_linear_out_scale, ffn1_out_scale, ffn2_out_scale;
+            std::string scale_var_name;
 
             for (int i = 0; i < qkv_w.size(); i++) {
                 auto name = qkv_w[i];
@@ -114,6 +123,7 @@ void MultiTransformerQuantTransformPass::ApplyImpl(Graph* g) const {
 
                 
                 if (i == 0) {
+                    scale_var_name = "out_scale_" + name;
                     // Main graph has transformed weight data, sub graph cannot gain origin info
                     // Set info as graph attr
                     if (qkv_w_dims.size() != 1) {
@@ -131,15 +141,35 @@ void MultiTransformerQuantTransformPass::ApplyImpl(Graph* g) const {
                 }
                 // for cublasLt
                 int k = qkv_w_dims[3], n = qkv_w_dims[0] * qkv_w_dims[1] * qkv_w_dims[2];
-                VLOG(1) << "prepare weight " << name;
-                std::vector<float> weight_scale(n), out_scale(n);
-                PrepareWeights(weight_tensor, k, n, weight_scale, var_type, true);
-                for (int j = 0; j < n; ++j) {
-                    out_scale[j] = weight_scale[j] * in_scale[i];
+                
+                if (i == 0) {
+                    qkv_out_scale.mutable_data<float>({qkv_w.size(), n}, platform::CPUPlace());
+                    VLOG(1) << "qkv_out_scale.mutable_data dims is " << qkv_out_scale.dims();
                 }
-                out_scales[i] = out_scale;
+
+                VLOG(1) << "prepare weight " << name;
+                std::vector<float> weight_scale(n, 1.0f);
+                PrepareWeights(weight_tensor, k, n, weight_scale, var_type, true);
+                VLOG(1) << "weight_scale[0] = " << weight_scale[0];
+                for (int j = 0; j < n; ++j) {
+                    qkv_out_scale.data<float>()[i * n + j] = weight_scale[j] * in_scale[i];
+                }
+                VLOG(1) << "qkv_out_scale.data<float>()[i * n] = " << qkv_out_scale.data<float>()[i * n];
+                if (i == qkv_w.size()-1) {
+                    auto* var = scope->Var(scale_var_name);
+                    auto* tensor = var->GetMutable<LoDTensor>();
+                    *tensor = qkv_out_scale;
+
+                    auto* var_desc = new framework::VarDesc(scale_var_name);
+                    var_desc->SetShape({qkv_w.size(), n});
+                    var_desc->SetDataType(framework::proto::VarType::FP32);
+                    var_desc->SetPersistable(true);
+                    auto* var_node = g->CreateVarNode(var_desc);
+                    node->inputs.push_back(var_node);
+                }
             } 
-            // op->SetAttr("qkv_out_scale", out_scales);
+
+            op->SetInput("QKVOutScale", {scale_var_name});
 
             if (op->HasAttr("out_linear_in_scale")) {
                 in_scale = PADDLE_GET_CONST(std::vector<float>, op->GetAttr("out_linear_in_scale"));
@@ -157,17 +187,35 @@ void MultiTransformerQuantTransformPass::ApplyImpl(Graph* g) const {
                         name));
                 auto* weight_tensor = weight_var->GetMutable<LoDTensor>();
                 auto dim = weight_tensor->dims();
+                if (i == 0) {
+                    scale_var_name = "out_scale_" + name;
+                }
                 if (dim.size() == 1) break;
                 int k = dim[0], n = dim[1];
 
-                std::vector<float> weight_scale(n), out_scale(n);
+                if (i == 0) {
+                    out_linear_out_scale.mutable_data<float>({out_linear_w.size(), n}, platform::CPUPlace());
+                }
+
+                std::vector<float> weight_scale(n, 1.0f);
                 PrepareWeights(weight_tensor, k, n, weight_scale, var_type, false);
                 for (int j = 0; j < n; ++j) {
-                    out_scale[j] = weight_scale[j] * in_scale[i];
+                    out_linear_out_scale.data<float>()[i * n + j] = weight_scale[j] * in_scale[i];
                 }
-                out_scales[i] = out_scale;
+                if (i == out_linear_w.size()-1) {
+                    auto* var = scope->Var(scale_var_name);
+                    auto* tensor = var->GetMutable<LoDTensor>();
+                    *tensor = out_linear_out_scale;
+
+                    auto* var_desc = new framework::VarDesc(scale_var_name);
+                    var_desc->SetShape({qkv_w.size(), n});
+                    var_desc->SetDataType(framework::proto::VarType::FP32);
+                    var_desc->SetPersistable(true);
+                    auto* var_node = g->CreateVarNode(var_desc);
+                    node->inputs.push_back(var_node);
+                }
             } 
-            // op->SetAttr("out_linear_out_scale", out_scales);
+            op->SetInput("OutLinearOutScale", {scale_var_name});
 
             if (op->HasAttr("ffn1_in_scale")) {
                 in_scale = PADDLE_GET_CONST(std::vector<float>, op->GetAttr("ffn1_in_scale"));
@@ -185,6 +233,7 @@ void MultiTransformerQuantTransformPass::ApplyImpl(Graph* g) const {
                 auto* weight_tensor = weight_var->GetMutable<LoDTensor>();
                 auto dim = weight_tensor->dims();
                 if (i == 0) {
+                    scale_var_name = "out_scale_" + name;
                     if (dim.size() != 1) {
                         g->Set("dim_ffn_" + name, new int(static_cast<int>(dim[1])));
                     }
@@ -194,14 +243,28 @@ void MultiTransformerQuantTransformPass::ApplyImpl(Graph* g) const {
                     if (dim.size() == 1) break;
                 }
                 int k = dim[0], n = dim[1];
-                std::vector<float> weight_scale(n), out_scale(n);
+                if (i == 0) {
+                    ffn1_out_scale.mutable_data<float>({ffn1_weight.size(), n}, platform::CPUPlace());
+                }
+                std::vector<float> weight_scale(n, 1.0f);
                 PrepareWeights(weight_tensor, k, n, weight_scale, var_type, false);
                 for (int j = 0; j < n; ++j) {
-                    out_scale[j] = weight_scale[j] * in_scale[i];
+                    ffn1_out_scale.data<float>()[i * n + j] = weight_scale[j] * in_scale[i];
                 }
-                out_scales[i] = out_scale;
+                if (i == ffn1_weight.size()-1) {
+                    auto* var = scope->Var(scale_var_name);
+                    auto* tensor = var->GetMutable<LoDTensor>();
+                    *tensor = ffn1_out_scale;
+
+                    auto* var_desc = new framework::VarDesc(scale_var_name);
+                    var_desc->SetShape({qkv_w.size(), n});
+                    var_desc->SetDataType(framework::proto::VarType::FP32);
+                    var_desc->SetPersistable(true);
+                    auto* var_node = g->CreateVarNode(var_desc);
+                    node->inputs.push_back(var_node);
+                }
             } 
-            // op->SetAttr("ffn1_out_scale", out_scales);
+            op->SetInput("FFN1OutScale", {scale_var_name});
 
             if (op->HasAttr("ffn2_in_scale")) {
                 in_scale = PADDLE_GET_CONST(std::vector<float>, op->GetAttr("ffn2_in_scale"));
@@ -217,16 +280,32 @@ void MultiTransformerQuantTransformPass::ApplyImpl(Graph* g) const {
                         name));
                 auto* weight_tensor = weight_var->GetMutable<LoDTensor>();
                 auto dim = weight_tensor->dims();
+                if (i == 0) {
+                    scale_var_name = "out_scale_" + name;
+                }
                 if (dim.size() == 1) break;
                 int k = dim[0], n = dim[1];
-                std::vector<float> weight_scale(n), out_scale(n);
+                if (i == 0) {
+                    ffn2_out_scale.mutable_data<float>({ffn2_weight.size(), n}, platform::CPUPlace());
+                }
+                std::vector<float> weight_scale(n, 1.0f);
                 PrepareWeights(weight_tensor, k, n, weight_scale, var_type, false);
                 for (int j = 0; j < n; ++j) {
-                    out_scale[j] = weight_scale[j] * in_scale[i];
+                    ffn2_out_scale.data<float>()[i * n + j] = weight_scale[j] * in_scale[i];
                 }
-                out_scales[i] = out_scale;
-            } 
-            // op->SetAttr("ffn2_out_scale", out_scales);
+                 if (i == ffn2_weight.size()-1) {
+                    auto* var = scope->Var(scale_var_name);
+                    auto* tensor = var->GetMutable<LoDTensor>();
+                    *tensor = ffn2_out_scale;auto* var_desc = new framework::VarDesc(scale_var_name);
+
+                    var_desc->SetShape({qkv_w.size(), n});
+                    var_desc->SetDataType(framework::proto::VarType::FP32);
+                    var_desc->SetPersistable(true);
+                    auto* var_node = g->CreateVarNode(var_desc);
+                    node->inputs.push_back(var_node);
+                }
+            }
+            op->SetInput("FFN2OutScale", {scale_var_name}); 
             
         }
     }
@@ -295,14 +374,8 @@ void MultiTransformerQuantTransformPass::PrepareWeights(framework::Tensor* weigh
     // }
     
     // transform: use API
-    int ldbtransform = 32 * n; //COL32
-    weight_tensor->Resize({(k + 32 - 1) / 32 * ldbtransform});
+    weight_tensor->Resize({k*n});
     weight_tensor->mutable_data<int8_t>(place);
-
-    // std::unique_ptr<operators::CublasLtTransformHelper> transform_helper = 
-    //     std::make_unique<operators::CublasLtTransformHelper>(k, n, operators::CublasDataLayout::COL32, false);
-    
-    // transform_helper->Transform(weight_tensor_tmp.data<int8_t>(), weight_tensor->data<int8_t>());
 
 }
 

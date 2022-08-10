@@ -1184,13 +1184,46 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
         cudaEventCreate(&stream_events[i]);
     }
     
-    // 0. input
+    // 0. 
+    // input
     auto *input_x = ctx.Input<Tensor>("X");
     const auto input_x_dims = input_x->dims();
     int bsz = input_x_dims[0];
     int seq_len = input_x_dims[1];
     int dim_embed = input_x_dims[2];
     int bsz_seq = bsz * seq_len;
+
+    // input scales, vector, size = num_layers
+    auto qkv_in_scale = ctx.Attr<std::vector<float>>("qkv_in_scale"); 
+    auto out_linear_in_scale = ctx.Attr<std::vector<float>>("out_linear_in_scale");
+    auto ffn1_in_scale = ctx.Attr<std::vector<float>>("ffn1_in_scale");
+    auto ffn2_in_scale = ctx.Attr<std::vector<float>>("ffn2_in_scale");
+
+    // debugggggg
+    int num_layers = qkv_in_scale.size();
+    VLOG(1) << "num_layers from qkv_in_scale = " << num_layers;
+
+    for (int i = 0; i < num_layers; ++i) {
+      VLOG(1) << "qkv_in_scale[" << i << "] = " << qkv_in_scale[i];
+    }
+    // debugggggg
+
+    // output scales, tensor, size = [num_layers, n], n is gemm output size
+    auto *qkv_out_scale = ctx.Input<Tensor>("QKVOutScale");
+    auto *out_linear_out_scale = ctx.Input<Tensor>("OutLinearOutScale");
+    auto *ffn1_out_scale = ctx.Input<Tensor>("FFN1OutScale");
+    auto *ffn2_out_scale = ctx.Input<Tensor>("FFN2OutScale");
+
+    // debugggggg
+    VLOG(1) << "qkv_out_scale dims is " << qkv_out_scale->dims() << " dtype is " << qkv_out_scale->dtype();
+    int qkv_out_scale_n = qkv_out_scale->dims()[1];
+    std::vector<float> qkv_out_scale_vec(qkv_out_scale_n * num_layers);
+    cudaMemcpy(qkv_out_scale_vec.data(), qkv_out_scale->data<float>(), qkv_out_scale_n * num_layers * sizeof(float), cudaMemcpyDeviceToHost);
+    for (int i = 0; i < num_layers; ++i) {
+      VLOG(1) << qkv_out_scale_vec[i * qkv_out_scale_n];
+    }
+
+    // debugggggg
 
     // 1. layer norm
     const auto pre_layer_norm = ctx.Attr<bool>("pre_layer_norm");

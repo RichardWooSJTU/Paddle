@@ -202,6 +202,8 @@ class FusedMultiTransformerINT8OpMaker
         .AsDuplicable();
     AddInput("QKVW", "The qkv weight tensor.").AsDuplicable();
     AddInput("QKVBias", "The qkv bias tensor.").AsDispensable().AsDuplicable();
+    AddInput("QKVOutScale", "QKVOutScale").AsDuplicable();
+
     AddInput("CacheKV", "(optional) The cached KV for generation inference.")
         .AsDispensable()
         .AsDuplicable();
@@ -214,21 +216,26 @@ class FusedMultiTransformerINT8OpMaker
     AddInput("OutLinearBias", "The out_linear bias tensor.")
         .AsDispensable()
         .AsDuplicable();
+    AddInput("OutLinearOutScale", "OutLinearOutScale").AsDuplicable();
 
     AddInput("FFNLnScale", "The layer_norm scale of FusedFeedForward op")
         .AsDuplicable();
     AddInput("FFNLnBias", "The layer_norm bias of FusedFeedForward op")
         .AsDuplicable();
+        
     AddInput("FFN1Weight", "The linear1 weight of FusedFeedForward op")
         .AsDuplicable();
     AddInput("FFN1Bias", "The linear1 bias of FusedFeedForward op")
         .AsDispensable()
         .AsDuplicable();
+    AddInput("FFN1OutScale", "FFN1OutScale").AsDuplicable();
+
     AddInput("FFN2Weight", "The linear2 weight of FusedFeedForward op")
         .AsDuplicable();
     AddInput("FFN2Bias", "The linear2 bias input of FusedFeedForward op")
         .AsDispensable()
         .AsDuplicable();
+    AddInput("FFN2OutScale", "FFN2OutScale").AsDuplicable();
 
     AddOutput("CacheKVOut", "The updated cache KV. Inplace with CacheKV")
         .AsDispensable()
