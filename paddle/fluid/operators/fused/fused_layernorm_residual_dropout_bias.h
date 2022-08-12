@@ -974,7 +974,10 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void fused_fast_ln_fwd_quant_dequa
     U *__restrict__ mean_out_ptr,
     U *__restrict__ var_out_ptr,
     T *__restrict__ residual_out_ptr,
-    int8_t *__restrict__ y_ptr) {
+    int8_t *__restrict__ y_ptr,
+    const float *__restrict__ quant_out_scale_ptr,
+    const int quant_layer_offset,
+    const float quant_in_scale_data) {
 
   __shared__ U smem[WARPS_M * WARPS_N];
   using Vec = phi::AlignedVector<T, VecSize>;
@@ -1019,16 +1022,20 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void fused_fast_ln_fwd_quant_dequa
   }
 
   constexpr U rn = 1.f / U(ELTS_PER_ROW);
-  for (int row = r; row < rows; row += gridDim.x * ROWS_PER_CTA) {
+  for (int row = r; row < rows; row += gridDim.x * ROWS_PER_CTA) { // 4
     Vec x[LDGS];
     Vec_int32 x_int32[LDGS];
     Vec residual[LDGS];
+
+    Vec_float quant_out_scale[LDGS];
+
 #pragma unroll
-    for (int it = 0, col = c; it < LDGS; it++) {
+    for (int it = 0, col = c; it < LDGS; it++) { // 1
       phi::Load<int32_t, VecSize>(x_ptr + row * ELTS_PER_ROW + col * VecSize, &x_int32[it]);
       phi::Load<T, VecSize>(residual_ptr + row * ELTS_PER_ROW + col * VecSize,
                             &residual[it]);
-      col += THREADS_PER_ROW;
+      phi::Load<float, VecSize>(quant_out_scale_ptr + quant_layer_offset + col * VecSize, &quant_out_scale[it]);
+      col += THREADS_PER_ROW;  // 32
     }
 
     MaskStoreT mask_vec[LDGS];
@@ -1061,7 +1068,7 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void fused_fast_ln_fwd_quant_dequa
 #pragma unroll
         for (int jt = 0; jt < VecSize; jt++) {
           // dropout(x) + residual
-          T tmp = (static_cast<T>(static_cast<float>(x_int32[it][jt]) * 1.0f) + bias[it][jt]) *
+          T tmp = (static_cast<T>(static_cast<float>(x_int32[it][jt]) * quant_out_scale[it][jt]) + bias[it][jt]) *
                           static_cast<T>(mask_vec[it][jt]) * factor +
                       residual[it][jt];
           x[it][jt] = tmp;
@@ -1074,7 +1081,7 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void fused_fast_ln_fwd_quant_dequa
 #pragma unroll
         for (int jt = 0; jt < VecSize; jt++) {
           // dropout(x) + residual
-          T tmp = static_cast<T>(static_cast<float>(x_int32[it][jt]) * 1.0f) * static_cast<T>(mask_vec[it][jt]) * factor +
+          T tmp = static_cast<T>(static_cast<float>(x_int32[it][jt]) * quant_out_scale[it][jt]) * static_cast<T>(mask_vec[it][jt]) * factor +
                       residual[it][jt];
           x[it][jt] = tmp;
           xf[it * VecSize + jt] = U(x[it][jt]);
@@ -1183,7 +1190,8 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void fused_fast_ln_fwd_quant_dequa
         U tmp = rsigma * (static_cast<U>(xf[it * VecSize + jt]) - mu_local);
         x[it][jt] = static_cast<T>(static_cast<U>(gamma[it][jt]) * tmp +
                                    static_cast<U>(beta[it][jt]));
-        x_int8[it][jt] = __float2int_rn(static_cast<float>(x[it][jt]) * 1.0f);
+        x_int8[it][jt] = __float2int_rn(static_cast<float>(x[it][jt]) 
+                                                                * quant_in_scale_data);
       }
     }
 
@@ -1896,7 +1904,10 @@ void LaunchLayernormResidualDropoutBiasQDQ(
     int8_t *layernorm_dst,
     LayerNormParamType<T> *mean,
     LayerNormParamType<T> *var,
-    const platform::CUDADeviceContext &ctx) {
+    const platform::CUDADeviceContext &ctx,
+    const float* quant_out_scale_data,
+    const int quant_layer_offset,
+    const float quant_in_scale_data) {
   // dropout_prob == 1.0f
   if (std::abs(dropout_prob - 1.0f) < 1e-5) {
     auto cuda_place = ctx.GetPlace();
@@ -1967,7 +1978,10 @@ void LaunchLayernormResidualDropoutBiasQDQ(
                                                           mean,                \
                                                           var,                 \
                                                           dst,                 \
-                                                          layernorm_dst);      \
+                                                          layernorm_dst,       \
+                                                          quant_out_scale_data,\
+                                                          quant_layer_offset,  \
+                                                          quant_in_scale_data);\
   } break
 
 #define LAUNCH_FUSED_FAST_LN_KERNEL       \

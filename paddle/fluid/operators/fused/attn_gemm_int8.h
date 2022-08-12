@@ -34,25 +34,22 @@ static inline __device__ int8_t float_to_int8_rn(float x)
 // m should be a mutiple of 32
 // grid((m+31)/32, (n+31)/32)
 // block(8, 32)
-// But have confusion about how the scale is used.
 template <typename T>
 __global__ void row_major_to_col32_quantize_kernel(const T* input,
                                                  char4* output,
                                                  int m,
                                                  int n)
-{
-    // const float scale = __ldg(scale_ptr);
-    
+{   
     int n_id = (blockIdx.x * blockDim.x + threadIdx.x) << 2;
     int m_id = blockIdx.y * blockDim.y + threadIdx.y;
 
     bool check = ((m_id < m) && (n_id < n));
     if (check) {
         char4 tmp;
-        tmp.x = __float2int_rn(static_cast<float>(input[m_id * n + n_id]) * 1.0);
-        tmp.y = __float2int_rn(static_cast<float>(input[m_id * n + n_id+1]) * 1.0);
-        tmp.z = __float2int_rn(static_cast<float>(input[m_id * n + n_id+2]) * 1.0);
-        tmp.w = __float2int_rn(static_cast<float>(input[m_id * n + n_id+3]) * 1.0);
+        tmp.x = __float2int_rn(static_cast<float>(input[m_id * n + n_id]) * 1.0f);
+        tmp.y = __float2int_rn(static_cast<float>(input[m_id * n + n_id+1]) * 1.0f);
+        tmp.z = __float2int_rn(static_cast<float>(input[m_id * n + n_id+2]) * 1.0f);
+        tmp.w = __float2int_rn(static_cast<float>(input[m_id * n + n_id+3]) * 1.0f);
         // COL32_col = n_id >> 5 ; COL32_row = (m_id << 5) + (n_id & 31)
         // COL32_idx = (COL32_col << 5) * m + COL32_row = (n_id & 0xffffffe0)*m + (m_id << 5) + (n_id & 31)
         output[((n_id & 0xffffffe0) * m + (m_id << 5) + (n_id & 31)) >> 2] = tmp;
@@ -63,7 +60,6 @@ __global__ void row_major_to_col32_quantize_kernel(const T* input,
 template <typename T>
 void row_major_to_col32_quantize_kernelLauncher(const T* input,
                                                 int8_t* output,
-                                                // T* scale,
                                                 const int m,
                                                 const int n,
                                                 cudaStream_t stream) {
@@ -73,6 +69,48 @@ void row_major_to_col32_quantize_kernelLauncher(const T* input,
   row_major_to_col32_quantize_kernel<<<grid, block, 0, stream>>>(
       input,
       (char4*)output,
+      m,
+      n);
+}
+
+template <typename T>
+__global__ void quantize_kernel(const T* input,
+                                char4* output,
+                                const float scale,
+                                int m,
+                                int n)
+{   
+    int n_id = (blockIdx.x * blockDim.x + threadIdx.x) << 2;
+    int m_id = blockIdx.y * blockDim.y + threadIdx.y;
+
+    bool check = ((m_id < m) && (n_id < n));
+    if (check) {
+        char4 tmp;
+        tmp.x = __float2int_rn(static_cast<float>(input[m_id * n + n_id]) * scale);
+        tmp.y = __float2int_rn(static_cast<float>(input[m_id * n + n_id+1]) * scale);
+        tmp.z = __float2int_rn(static_cast<float>(input[m_id * n + n_id+2]) * scale);
+        tmp.w = __float2int_rn(static_cast<float>(input[m_id * n + n_id+3]) * scale);
+        output[(m_id * n + n_id) >> 2] = tmp;
+    }
+    
+}
+
+template <typename T>
+void quantize_kernelLauncher(const T* input,
+                            int8_t* output,
+                            const float scale,
+                            const int m,
+                            const int n,
+                            cudaStream_t stream) {
+
+  //TODO(minghaoBD): optimize the kennel launch times when m==1 or n==1
+  dim3 grid((m + 31) / 32, (n + 31) / 32);
+  dim3 block(32, 32);
+
+  row_major_to_col32_quantize_kernel<<<grid, block, 0, stream>>>(
+      input,
+      (char4*)output,
+      scale,
       m,
       n);
 }
@@ -110,6 +148,41 @@ void col32_to_row_major_dequantize_kernelLauncher(const int32_t* input,
 
   col32_to_row_major_dequantize_kernel<<<grid, block, 0, stream>>>(
       output, input, hidden_units, batch_size, 127.0f);
+}
+
+// dequantize using weight scales and input scales
+template <typename T>
+__global__ void dequantize_kernel(T* output,
+                                    const int32_t* input,
+                                    const int m,  // hidden
+                                    const int n,  // batch size
+                                    const float* quant_out_scale_data,
+                                    const int layer_offset) 
+{
+  int m_id = blockIdx.x * blockDim.x + threadIdx.x;  // hidden
+  int n_id = blockIdx.y * blockDim.y + threadIdx.y;  // batch size
+
+  bool check = ((m_id < m) && (n_id < n));
+  if (check) {
+    float out_scale = quant_out_scale_data[layer_offset + m_id];
+    output[n_id * m + m_id] =
+        static_cast<T>(static_cast<float>(input[n_id * m + m_id]) * out_scale);
+  }
+}
+
+template <typename T>
+void dequantize_kernelLauncher(const int32_t* input,
+                                T* output,
+                                const int batch_size, // m
+                                const int hidden_units,  // n
+                                cudaStream_t stream,
+                                const float* quant_out_scale_data,
+                                const int layer_offset) {
+  dim3 grid((hidden_units + 31) / 32, (batch_size + 31) / 32);
+  dim3 block(32, 32);
+
+  dequantize_kernel<<<grid, block, 0, stream>>>(
+      output, input, hidden_units, batch_size, quant_out_scale_data, layer_offset);
 }
 
 
@@ -225,7 +298,9 @@ public:
                         framework::Tensor* output_tmp, //[int32]  workspace
                         framework::Tensor* bias_out,
                         cudaStream_t* streams,
-                        cudaEvent_t* stream_events){
+                        cudaEvent_t* stream_events,
+                        const framework::Tensor* quant_out_scale,
+                        const int layer_offset){
         int m = m_, k = k_, n = n_;
 
         VLOG(1) << "[DEBUG] GEMM";
@@ -237,11 +312,13 @@ public:
 
 
         //dequant C
-        VLOG(1) << "[DEBUG] col32_to_row_major_dequantize_kernelLauncher";
-        col32_to_row_major_dequantize_kernelLauncher<T>(output_tmp->data<int32_t>(), 
+        VLOG(1) << "[DEBUG] dequantize_kernelLauncher";
+        dequantize_kernelLauncher<T>(output_tmp->data<int32_t>(), 
                                                         output->data<T>(), 
                                                         m_, n_, 
-                                                        dev_ctx_.stream());
+                                                        dev_ctx_.stream(),
+                                                        quant_out_scale->data<float>(),
+                                                        layer_offset);
 
         if (compute_bias_) {
             // bias_out = output + bias
@@ -255,6 +332,7 @@ public:
     }
 
     void ComputeForwardWoDQ(const framework::Tensor* weight, // [int8] which has been transformed in pass
+                        const float quant_in_scale_data, // [fp32] in_scale
                         const framework::Tensor* input, // [fp16/32] 
                         framework::Tensor* input_tmp, // [int8]  workspace
                         const framework::Tensor* bias, //[fp16/32] 
@@ -264,13 +342,12 @@ public:
                         cudaEvent_t* stream_events
                         ){
         int m = m_, k = k_, n = n_;
-        //quant transpose A
-        float scale = 1.0f;
         VLOG(1) << "[DEBUG] row_major_to_col32_quantize_kernelLauncher";
-        row_major_to_col32_quantize_kernelLauncher<T>(input->data<T>(), 
-                                                      input_tmp->data<int8_t>(), 
-                                                        m_, k_, 
-                                                      dev_ctx_.stream());
+        quantize_kernelLauncher<T>(input->data<T>(), 
+                                    input_tmp->data<int8_t>(),
+                                    quant_in_scale_data,
+                                    m_, k_, 
+                                    dev_ctx_.stream());
 
         VLOG(1) << "[DEBUG] GEMM";
         VLOG(1) << "input_tmp " << input_tmp->numel() << " dtype " << input_tmp->dtype();

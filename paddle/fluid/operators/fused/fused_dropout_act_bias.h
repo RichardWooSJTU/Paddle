@@ -126,7 +126,10 @@ __global__ void FusedDropoutActBiasQDQ(Functor act,
                                     const int32_t *__restrict__ src,
                                     const T *__restrict__ bias,
                                     int8_t *dst,
-                                    MaskType *mask) {
+                                    MaskType *mask,
+                                    const float* quant_out_scale_data,
+                                    const int quant_layer_offset,
+                                    const float quant_in_scale_data) {
   int col_id = blockDim.x * blockIdx.x + threadIdx.x;
   int row_id = blockIdx.y;
   int idx = row_id * cols + col_id;
@@ -158,7 +161,10 @@ __global__ void FusedDropoutActBiasQDQ(Functor act,
                                                  is_test,
                                                  nullptr,
                                                  nullptr,
-                                                 act);
+                                                 act,
+                                                 quant_out_scale_data,
+                                                 quant_layer_offset,
+                                                 quant_in_scale_data);
     }
   }
 }
@@ -239,7 +245,10 @@ void LaunchDropoutActBiasQDQ(Functor act_functor,
                           const T *bias,
                           int8_t *dst,
                           MaskType *mask_data,
-                          const platform::CUDADeviceContext &ctx) {
+                          const platform::CUDADeviceContext &ctx,
+                          const float* quant_out_scale_data,
+                          const int quant_layer_offset,
+                          const float quant_in_scale_data) {
   // dropout_prob == 1.0f
   if (std::abs(dropout_prob - 1.0f) < 1e-5) {
     SetZero<int8_t>(ctx, dst, rows * cols);
@@ -264,7 +273,10 @@ void LaunchDropoutActBiasQDQ(Functor act_functor,
             src,
             bias,
             dst,
-            mask_data);
+            mask_data,
+            quant_out_scale_data,
+            quant_layer_offset,
+            quant_in_scale_data);
   } else {
     FusedDropoutActBiasQDQ<T, MaskType, 1, Functor>
         <<<config.block_per_grid, config.thread_per_block, 0, ctx.stream()>>>(
@@ -279,7 +291,10 @@ void LaunchDropoutActBiasQDQ(Functor act_functor,
             src,
             bias,
             dst,
-            mask_data);
+            mask_data,
+            quant_out_scale_data,
+            quant_layer_offset,
+            quant_in_scale_data);
   }
 }
 

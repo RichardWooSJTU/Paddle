@@ -1214,9 +1214,13 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     auto *ffn1_out_scale = ctx.Input<Tensor>("FFN1OutScale");
     auto *ffn2_out_scale = ctx.Input<Tensor>("FFN2OutScale");
 
+    int qkv_out_scale_n = qkv_out_scale->dims()[1];
+    int out_linear_out_scale_n = out_linear_out_scale->dims()[1];
+    int ffn1_out_scale_n = ffn1_out_scale->dims()[1];
+    int ffn2_out_scale_n = ffn2_out_scale->dims()[1];
+
     // debugggggg
     VLOG(1) << "qkv_out_scale dims is " << qkv_out_scale->dims() << " dtype is " << qkv_out_scale->dtype();
-    int qkv_out_scale_n = qkv_out_scale->dims()[1];
     std::vector<float> qkv_out_scale_vec(qkv_out_scale_n * num_layers);
     cudaMemcpy(qkv_out_scale_vec.data(), qkv_out_scale->data<float>(), qkv_out_scale_n * num_layers * sizeof(float), cudaMemcpyDeviceToHost);
     for (int i = 0; i < num_layers; ++i) {
@@ -1454,7 +1458,8 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
                                   ln_bias_data,
                                   input_workspace.data<int8_t>(),
                                   ln_mean_data,
-                                  ln_var_data);
+                                  ln_var_data,
+                                  qkv_in_scale[i]);
       } else if (!pre_layer_norm) {
         PADDLE_THROW(platform::errors::Unimplemented(
             "Unimplemented post_layer_norm for now."));
@@ -1476,7 +1481,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
       const Tensor *bias = time_step ? nullptr : qkv_bias;
       
       qkv_compute.ComputeForwardWoQ(
-        qkv_weights[i], &input_workspace, bias, &qkv_out, &output_workspace, &qkv_out, streams, stream_events);
+        qkv_weights[i], &input_workspace, bias, &qkv_out, &output_workspace, &qkv_out, streams, stream_events, qkv_out_scale, i * qkv_out_scale_n);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(1) << "step2";
 #endif
@@ -1577,7 +1582,7 @@ cudaDeviceSynchronize();
 
       // step4. out_linear
       out_linear_compute.ComputeForwardWoDQ(
-          out_linear_weights[i], &fmha_out, &input_workspace, nullptr,  &output_workspace, nullptr, streams, stream_events);
+          out_linear_weights[i], out_linear_in_scale[i], &fmha_out, &input_workspace, nullptr,  &output_workspace, nullptr, streams, stream_events);
 
       if (time_step) { // decoder stage
         AllReduce<int32_t>(output_workspace, ring_id, bsz * 1 * num_head * dim_head, dev_ctx);
@@ -1614,10 +1619,12 @@ cudaDeviceSynchronize();
             ln_bias_data,
             bias_dropout_residual_out_data,
             dropout_mask_out_data,
-            // buf1->data<T>(),
             input_workspace.data<int8_t>(),
             ln_mean_data,
-            ln_var_data);
+            ln_var_data,
+            out_linear_out_scale->data<float>(),
+            i * out_linear_out_scale_n,
+            ffn1_in_scale[i]);
       } else {
       }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
@@ -1653,7 +1660,10 @@ cudaDeviceSynchronize();
                                               ffn1_biases[i]->data<T>(),
                                               "gelu",
                                               input_workspace.data<int8_t>(),
-                                              ffn1_dropout_mask_data);
+                                              ffn1_dropout_mask_data,
+                                              ffn1_in_scale.data<float>(),
+                                              i * ffn1_in_scale_n,
+                                              ffn2_in_scale[i]);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(1) << "step7";
 #endif
@@ -1710,7 +1720,10 @@ cudaDeviceSynchronize();
               dropout_mask_out_data,
               input_workspace.data<int8_t>(), // out   <int8_t>     -> buf1
               ln_mean_data,
-              ln_var_data);
+              ln_var_data,
+              ffn2_out_scale->data<float>(),
+              i * ffn2_out_scale_n,
+              qkv_in_scale[i+1]);
         } else {
           ffn2_fused_dropout_helper.ResidualDropoutBiasDQ(
               dev_ctx,
@@ -1718,7 +1731,9 @@ cudaDeviceSynchronize();
               bias_dropout_residual_out_data,
               ffn2_biases[i]->data<T>(),
               buf1->data<T>(),  // out
-              dropout_mask_out_data);
+              dropout_mask_out_data,
+              ffn2_out_scale->data<float>(),
+              i * ffn2_out_scale_n);
         }
       } else {
       }

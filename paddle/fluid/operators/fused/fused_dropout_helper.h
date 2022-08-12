@@ -168,7 +168,9 @@ class FusedDropoutHelper {
                            const T* residual,
                            const T* bias,
                            T* out,
-                           MaskType* mask) {
+                           MaskType* mask,
+                           const float* quant_out_scale_data,
+                           const int quant_layer_offset) {
     auto increment = GetIncrement(ctx);
     LaunchResidualDropoutBiasDQ<T, MaskType>(rows_,
                                            cols_,
@@ -182,7 +184,9 @@ class FusedDropoutHelper {
                                            bias,
                                            mask,
                                            out,
-                                           ctx);
+                                           ctx,
+                                           quant_out_scale_data,
+                                           quant_layer_offset);
   }
 
   void ResidualDropoutBiasGrad(const platform::CUDADeviceContext& ctx,
@@ -263,7 +267,10 @@ class FusedDropoutHelper {
                       const T* bias,
                       const std::string& act_method,
                       int8_t* out,
-                      MaskType* mask) {
+                      MaskType* mask,
+                      const float* quant_out_scale_data,
+                      const int quant_layer_offset,
+                      const float quant_in_scale_data) {
     auto increment = GetIncrement(ctx);
     if (act_method == "gelu") {
       GeluFunctor<T> gelu;
@@ -280,7 +287,10 @@ class FusedDropoutHelper {
           bias,
           out,
           mask,
-          ctx);
+          ctx,
+          quant_out_scale_data,
+          quant_layer_offset,
+          quant_in_scale_data);
     } else if (act_method == "relu") {
       phi::funcs::ReluFunctor<T> relu;
       LaunchDropoutActBiasQDQ<T, MaskType, phi::funcs::ReluFunctor<T>>(
@@ -296,7 +306,10 @@ class FusedDropoutHelper {
           bias,
           out,
           mask,
-          ctx);
+          ctx,
+          quant_out_scale_data,
+          quant_layer_offset,          
+          quant_in_scale_data);
     } else {
       PADDLE_THROW(platform::errors::InvalidArgument(
           "Currently only supports gelu or relu activation functions!"));
@@ -515,7 +528,10 @@ class FusedDropoutLayerNormHelper : public FusedDropoutHelper<T, MaskType> {
                                     MaskType* mask,
                                     int8_t* out,
                                     LayerNormParamType<T>* mean,
-                                    LayerNormParamType<T>* variance) {
+                                    LayerNormParamType<T>* variance,
+                                    const float* quant_out_scale_data,
+                                    const int quant_layer_offset,
+                                    const float quant_in_scale_data) {
     using U = LayerNormParamType<T>;
     int vec_size = MAX_CACHE_BYTES / sizeof(T);
     if (this->cols_ % vec_size != 0) {
@@ -543,7 +559,10 @@ class FusedDropoutLayerNormHelper : public FusedDropoutHelper<T, MaskType> {
         out,
         mean,
         variance,
-        ctx);
+        ctx,
+        quant_out_scale_data,
+        quant_layer_offset,
+        quant_in_scale_data);
   }
 
         // out = layernorm(residual + dropout(src + bias))

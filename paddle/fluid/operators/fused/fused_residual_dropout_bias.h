@@ -132,8 +132,12 @@ __forceinline__ __device__ void FusedResidualDropoutBiasOneThreadQDQ(
     const bool is_test,
     typename details::MPTypeTrait<T>::Type *mean_val,
     typename details::MPTypeTrait<T>::Type *var_val,
-    Functor act_func) {
+    Functor act_func,
+    const float *__restric__ quant_out_scale_data,
+    const int quant_layer_offset, 
+    const float quant_in_scale_data) {
   using LoadQ = phi::AlignedVector<int32_t, VecSize>;
+  using LoadFloat = phi::AlignedVector<float, VecSize>;
   using LoadT = phi::AlignedVector<T, VecSize>;
   using StoreT = phi::AlignedVector<T, VecSize>;
   using StoreQ = phi::AlignedVector<int8_t, VecSize>;
@@ -143,6 +147,7 @@ __forceinline__ __device__ void FusedResidualDropoutBiasOneThreadQDQ(
   LoadQ src_vec;
   LoadT residual_vec;
   LoadT bias_vec;
+  LoadFloat quant_out_scale_vec;
 #pragma unroll
   for (int ii = 0; ii < VecSize; ii++) {
     bias_vec[ii] = static_cast<T>(0);
@@ -150,6 +155,7 @@ __forceinline__ __device__ void FusedResidualDropoutBiasOneThreadQDQ(
   }
   // vectorize load data from global
   phi::Load<int32_t, VecSize>(&src[row_id * cols + col_id], &src_vec);
+  phi::Load<float, VecSize>(&quant_out_scale_data[quant_layer_offset + col_id], &quant_out_scale_vec);
   if (residual) {
     phi::Load<T, VecSize>(&residual[row_id * cols + col_id], &residual_vec);
   }
@@ -178,7 +184,7 @@ __forceinline__ __device__ void FusedResidualDropoutBiasOneThreadQDQ(
 
 #pragma unroll
   for (int ii = 0; ii < VecSize; ii++) {
-    T tmp0 = static_cast<T>(static_cast<float>(src_vec[ii]) * 1.0f);
+    T tmp0 = static_cast<T>(static_cast<float>(src_vec[ii]) * quant_out_scale_vec[ii]);
     T tmp = tmp0 + bias_vec[ii];
     if (Activation) {
       tmp = act_func(tmp);
@@ -190,7 +196,8 @@ __forceinline__ __device__ void FusedResidualDropoutBiasOneThreadQDQ(
       *mean_val += tmp;
       *var_val += (tmp * tmp);
     }
-    dest_vec_int8[ii] = __float2int_rn(static_cast<float>(dest_vec[ii]) * 1.0f);
+    dest_vec_int8[ii] = __float2int_rn(static_cast<float>(dest_vec[ii]) 
+                                                                * quant_in_scale_data);
   }
 
   // store result to global
@@ -225,16 +232,21 @@ __forceinline__ __device__ void FusedResidualDropoutBiasOneThreadDQ(
     const bool is_test,
     typename details::MPTypeTrait<T>::Type *mean_val,
     typename details::MPTypeTrait<T>::Type *var_val,
-    Functor act_func) {
+    Functor act_func,
+    const float *__restrict__ quant_out_scale_data,
+    const int quant_layer_offset) {
   using LoadQ = phi::AlignedVector<int32_t, VecSize>;
   using LoadT = phi::AlignedVector<T, VecSize>;
+  using LoadFloat = phi::AlignedVector<float, VecSize>;
   using StoreT = phi::AlignedVector<T, VecSize>;
+
   using MaskStoreT = phi::AlignedVector<MaskType, VecSize>;
   using U = typename details::MPTypeTrait<T>::Type;
 
   LoadQ src_vec;
   LoadT residual_vec;
   LoadT bias_vec;
+  LoadFloat quant_out_scale_vec;
 #pragma unroll
   for (int ii = 0; ii < VecSize; ii++) {
     bias_vec[ii] = static_cast<T>(0);
@@ -242,6 +254,8 @@ __forceinline__ __device__ void FusedResidualDropoutBiasOneThreadDQ(
   }
   // vectorize load data from global
   phi::Load<int32_t, VecSize>(&src[row_id * cols + col_id], &src_vec);
+  phi::Load<float, VecSize>(&quant_out_scale_data[quant_layer_offset + col_id], 
+                                                                &quant_out_scale_vec);
   if (residual) {
     phi::Load<T, VecSize>(&residual[row_id * cols + col_id], &residual_vec);
   }
@@ -269,7 +283,7 @@ __forceinline__ __device__ void FusedResidualDropoutBiasOneThreadDQ(
 
 #pragma unroll
   for (int ii = 0; ii < VecSize; ii++) {
-    T tmp0 = static_cast<T>(static_cast<float>(src_vec[ii]) * 1.0f);
+    T tmp0 = static_cast<T>(static_cast<float>(src_vec[ii]) * quant_out_scale_vec[ii]);
     T tmp = tmp0 + bias_vec[ii];
     if (Activation) {
       tmp = act_func(tmp);
@@ -364,7 +378,9 @@ __global__ void FusedResidualDropoutBiasDQ(const size_t rows,
                                          MaskType *mask,
                                          T *dst,
                                          uint64_t increment,
-                                         const bool is_test) {
+                                         const bool is_test,
+                                         const float *__restrict__ quant_out_scale_data,
+                                         const int quant_layer_offset) {
   int col_id = blockDim.x * blockIdx.x + threadIdx.x;
   int row_id = blockIdx.y;
   int idx = row_id * cols + col_id;
@@ -395,7 +411,9 @@ __global__ void FusedResidualDropoutBiasDQ(const size_t rows,
           is_test,
           nullptr,
           nullptr,
-          relu);
+          relu,
+          quant_out_scale_data,
+          quant_layer_offset);
     }
   }
 }
@@ -488,7 +506,9 @@ void LaunchResidualDropoutBiasDQ(const uint32_t rows,
                                const T *bias,
                                MaskType *mask_data,
                                T *dst,
-                               const platform::CUDADeviceContext &ctx) {
+                               const platform::CUDADeviceContext &ctx,
+                               const float *quant_out_scale_data,
+                               const int quant_layer_offset) {
   // dropout_prob == 1.0f
   if (std::abs(dropout_prob - 1.0f) < 1e-5) {
     if (residual == dst) return;
@@ -525,7 +545,9 @@ void LaunchResidualDropoutBiasDQ(const uint32_t rows,
             mask_data,
             dst,
             increment,
-            is_test);
+            is_test,
+            quant_out_scale_data,
+            quant_layer_offset);
   } else {
     FusedResidualDropoutBiasDQ<T, uint8_t, 1>
         <<<config.block_per_grid, config.thread_per_block, 0, ctx.stream()>>>(
@@ -540,7 +562,9 @@ void LaunchResidualDropoutBiasDQ(const uint32_t rows,
             mask_data,
             dst,
             increment,
-            is_test);
+            is_test
+            quant_out_scale_data,
+            quant_layer_offset);
   }
 }
 

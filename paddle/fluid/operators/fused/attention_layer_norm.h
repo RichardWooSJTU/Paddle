@@ -64,7 +64,8 @@ class AttnLayerNorm {
                       const LayerNormParamType<T>* bias_data,
                       int8_t* y_data,
                       LayerNormParamType<T>* mean_data,
-                      LayerNormParamType<T>* var_data) {
+                      LayerNormParamType<T>* var_data,
+                      const float quant_in_scale_data) {
     auto stream = dev_ctx_.stream();
 
     switch (GetDesiredBlockDim(feature_size_)) {
@@ -77,7 +78,8 @@ class AttnLayerNorm {
                                                   mean_data,
                                                   var_data,
                                                   epsilon_,
-                                                  feature_size_));
+                                                  feature_size_,
+                                                  quant_in_scale_data));
       default:
         PADDLE_THROW(platform::errors::InvalidArgument(
             "Feature_size must be larger than 1"));

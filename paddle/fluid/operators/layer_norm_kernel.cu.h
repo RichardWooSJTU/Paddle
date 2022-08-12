@@ -427,7 +427,8 @@ __global__ void LayerNormForwardQ(
     U *mean,
     U *var,
     float epsilon,
-    int64_t feature_size) {
+    int64_t feature_size,
+    const float quant_in_scale_data) {
   __shared__ U mean_share;
   __shared__ U var_share;
   __shared__ U shared_mean[32];  // threadIdx.x / warpSize <= kMaxBlockDim /
@@ -467,14 +468,14 @@ __global__ void LayerNormForwardQ(
     if (bias != nullptr) {
       for (int64_t i = beg_idx, j = threadIdx.x; i < end_idx;
            i += BlockDim, j += BlockDim) {
-        y[i] = __float2int_rn(1.0f * static_cast<float>(static_cast<U>(scale[j]) *
+        y[i] = __float2int_rn(quant_in_scale_data * static_cast<float>(static_cast<U>(scale[j]) *
                                   (static_cast<U>(x[i]) - mean_val) * invvar +
                               static_cast<U>(bias[j])));
       }
     } else {
       for (int64_t i = beg_idx, j = threadIdx.x; i < end_idx;
            i += BlockDim, j += BlockDim) {
-        y[i] = __float2int_rn(static_cast<float>(static_cast<U>(scale[j]) *
+        y[i] = __float2int_rn(quant_in_scale_data * static_cast<float>(static_cast<U>(scale[j]) *
                               (static_cast<U>(x[i]) - mean_val) * invvar));
       }
     }
@@ -482,13 +483,13 @@ __global__ void LayerNormForwardQ(
     if (bias != nullptr) {
       for (int64_t i = beg_idx, j = threadIdx.x; i < end_idx;
            i += BlockDim, j += BlockDim) {
-        y[i] = __float2int_rn(1.0f * static_cast<float>((static_cast<U>(x[i]) - mean_val) * invvar +
+        y[i] = __float2int_rn(quant_in_scale_data * static_cast<float>((static_cast<U>(x[i]) - mean_val) * invvar +
                               static_cast<U>(bias[j])));
       }
     } else {
       for (int64_t i = beg_idx, j = threadIdx.x; i < end_idx;
            i += BlockDim, j += BlockDim) {
-        y[i] = __float2int_rn(1.0f * static_cast<float>((static_cast<U>(x[i]) - mean_val) * invvar));
+        y[i] = __float2int_rn(quant_in_scale_data * static_cast<float>((static_cast<U>(x[i]) - mean_val) * invvar));
       }
     }
   }
