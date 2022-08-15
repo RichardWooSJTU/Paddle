@@ -107,7 +107,7 @@ void quantize_kernelLauncher(const T* input,
   dim3 grid((m + 31) / 32, (n + 31) / 32);
   dim3 block(32, 32);
 
-  row_major_to_col32_quantize_kernel<<<grid, block, 0, stream>>>(
+  quantize_kernel<<<grid, block, 0, stream>>>(
       input,
       (char4*)output,
       scale,

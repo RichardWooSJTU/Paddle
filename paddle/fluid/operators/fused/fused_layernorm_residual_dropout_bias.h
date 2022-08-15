@@ -983,6 +983,7 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void fused_fast_ln_fwd_quant_dequa
   using Vec = phi::AlignedVector<T, VecSize>;
   using Vec_int8 = phi::AlignedVector<int8_t, VecSize>;
   using Vec_int32 = phi::AlignedVector<int32_t, VecSize>;
+  using Vec_float = phi::AlignedVector<float, VecSize>;
   using Vec_scale = phi::AlignedVector<ScaleT, VecSize>;
   using MaskStoreT = phi::AlignedVector<MaskType, VecSize>;
 

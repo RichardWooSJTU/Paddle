@@ -133,7 +133,7 @@ __forceinline__ __device__ void FusedResidualDropoutBiasOneThreadQDQ(
     typename details::MPTypeTrait<T>::Type *mean_val,
     typename details::MPTypeTrait<T>::Type *var_val,
     Functor act_func,
-    const float *__restric__ quant_out_scale_data,
+    const float *__restrict__ quant_out_scale_data,
     const int quant_layer_offset, 
     const float quant_in_scale_data) {
   using LoadQ = phi::AlignedVector<int32_t, VecSize>;
@@ -562,7 +562,7 @@ void LaunchResidualDropoutBiasDQ(const uint32_t rows,
             mask_data,
             dst,
             increment,
-            is_test
+            is_test,
             quant_out_scale_data,
             quant_layer_offset);
   }

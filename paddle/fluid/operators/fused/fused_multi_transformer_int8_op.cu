@@ -1661,8 +1661,8 @@ cudaDeviceSynchronize();
                                               "gelu",
                                               input_workspace.data<int8_t>(),
                                               ffn1_dropout_mask_data,
-                                              ffn1_in_scale.data<float>(),
-                                              i * ffn1_in_scale_n,
+                                              ffn1_out_scale->data<float>(),
+                                              i * ffn1_out_scale_n,
                                               ffn2_in_scale[i]);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(1) << "step7";
