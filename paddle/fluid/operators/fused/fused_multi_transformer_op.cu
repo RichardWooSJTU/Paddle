@@ -1163,6 +1163,24 @@ inline static double diffTime(timeval start, timeval end)
 }
 
 template <typename T>
+static void PrintMatrix(T* mat_d, int m, int n) {
+    std::vector<T> tmp(m*n);
+    std::cout << "=========PrintMatrix========" << std::endl;
+    cudaMemcpy(tmp.data(), mat_d, sizeof(T) * m * n, cudaMemcpyDeviceToHost);
+    for (int i = 0; i < m; ++i) {
+        for (int j = 0; j < n; ++j) {
+          if(std::is_same<T, int8_t>::value) {
+            std::cout << static_cast<int>(tmp[i*n+j]) << " ";
+          } else {
+            std::cout << tmp[i*n+j] << " ";
+          }
+        }
+        std::cout << std::endl;
+    }
+    std::cout << "=========PrintMatrixEnd========" << std::endl;
+}
+
+template <typename T>
 class FusedMultiTransformerOpKernel : public framework::OpKernel<T> {
  public:
   void Compute(const framework::ExecutionContext &ctx) const override {
@@ -1367,6 +1385,8 @@ class FusedMultiTransformerOpKernel : public framework::OpKernel<T> {
                                   buf1->data<T>(),
                                   ln_mean_data,
                                   ln_var_data);
+        VLOG(1) << "buf1 " << buf1->dims();
+        PrintMatrix(buf1->data<T>(), bsz_seq, dim_embed);
       } else if (!pre_layer_norm) {
         PADDLE_THROW(platform::errors::Unimplemented(
             "Unimplemented post_layer_norm for now."));
@@ -1388,6 +1408,8 @@ class FusedMultiTransformerOpKernel : public framework::OpKernel<T> {
       const Tensor *bias = time_step ? nullptr : qkv_bias;
       qkv_compute.ComputeForward(
           qkv_weights[i], buf1, bias, &qkv_out, &qkv_out);
+      VLOG(1) << "qkv_out " << qkv_out.dims();
+      PrintMatrix(qkv_out.data<T>(), bsz_seq, 3 * dim_embed);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step2";
 #endif
@@ -1472,6 +1494,8 @@ class FusedMultiTransformerOpKernel : public framework::OpKernel<T> {
                                     &qktv_out,
                                     &fmha_out);
       }
+      VLOG(1) << "fmha_out " << fmha_out.dims();
+      PrintMatrix(fmha_out.data<T>(), bsz_seq, dim_embed);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step3";
 #endif
@@ -1485,6 +1509,9 @@ class FusedMultiTransformerOpKernel : public framework::OpKernel<T> {
       // step4. out_linear
       out_linear_compute.ComputeForward(
           out_linear_weights[i], &fmha_out, nullptr, buf1, nullptr);
+      
+      VLOG(1) << "out linear out " << buf1->dims();
+      PrintMatrix(buf1->data<T>(), bsz_seq, dim_embed);
       AllReduce<T>(*buf1, ring_id, dev_ctx);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step4";
@@ -1517,6 +1544,8 @@ class FusedMultiTransformerOpKernel : public framework::OpKernel<T> {
             ln_var_data);
       } else {
       }
+      VLOG(1) << "ln out " << buf1->dims();
+      PrintMatrix(buf1->data<T>(), bsz_seq, dim_embed);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step5";
 #endif
@@ -1530,6 +1559,8 @@ class FusedMultiTransformerOpKernel : public framework::OpKernel<T> {
       // step6. ffn matmul1
       ffn1_linear_compute.ComputeForward(
           ffn1_weights[i], buf1, nullptr, &ffn1_out, nullptr);
+      VLOG(1) << "ffn1 out " << ffn1_out.dims();
+      PrintMatrix(ffn1_out.data<T>(), bsz_seq, 4*dim_embed);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step6";
 #endif
@@ -1561,6 +1592,9 @@ class FusedMultiTransformerOpKernel : public framework::OpKernel<T> {
       // step8. ffn matmul2
       ffn2_linear_compute.ComputeForward(
           ffn2_weights[i], &ffn1_dropout_out, nullptr, buf1, nullptr);
+      
+      VLOG(1) << "ffn2 out " << buf1->dims();
+      PrintMatrix(buf1->data<T>(), bsz_seq, dim_embed);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step8.0";
 #endif
@@ -1594,6 +1628,8 @@ class FusedMultiTransformerOpKernel : public framework::OpKernel<T> {
               buf0->data<T>(),
               ln_mean_data,
               ln_var_data);
+          VLOG(1) << "layer out " << buf0->dims();
+          PrintMatrix(buf0->data<T>(), bsz_seq, dim_embed);
         } else {
           ffn2_fused_dropout_helper.ResidualDropoutBias(
               dev_ctx,

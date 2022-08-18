@@ -104,7 +104,7 @@ void quantize_kernelLauncher(const T* input,
                             cudaStream_t stream) {
 
   //TODO(minghaoBD): optimize the kennel launch times when m==1 or n==1
-  dim3 grid((m + 31) / 32, (n + 31) / 32);
+  dim3 grid((n + 31) / 32, (m + 31) / 32);
   dim3 block(32, 32);
 
   quantize_kernel<<<grid, block, 0, stream>>>(
@@ -185,19 +185,33 @@ void dequantize_kernelLauncher(const int32_t* input,
       output, input, hidden_units, batch_size, quant_out_scale_data, layer_offset);
 }
 
-
-__global__ void reduce(int32_t* data, const int m, const int n, const int num_streams) {
-    int num_threads = m * n * num_streams;
-    int tid = threadIdx.x + blockIdx.x * blockDim.x;
-    int stride = blockDim.x * gridDim.x;
-    int num_items = (m * n);
-    int stream = tid / num_items;
-    if (stream == 0) return;
-    int item = tid % num_items;
-
-    for (; tid < num_threads; tid += stride) {
-        atomicAdd(&data[item], data[tid]);
+template <typename T>
+static void PrintMatrix(const T* mat_d, int m, int n) {
+    std::vector<T> tmp(m*n);
+    std::cout << "=========PrintMatrix========" << std::endl;
+    cudaMemcpy(tmp.data(), mat_d, sizeof(T) * m * n, cudaMemcpyDeviceToHost);
+    int sum_i8 = 0;
+    T sum = static_cast<T>(0);
+    for (int i = 0; i < m; ++i) {
+        for (int j = 0; j < n; ++j) {
+          if(std::is_same<T, int8_t>::value) {
+            std::cout << static_cast<int>(tmp[i*n+j]) << " ";
+            sum_i8 += static_cast<int>(tmp[i*n+j]);
+            // std::cout << "sum = " << sum_i8 << std::endl;
+          } else {
+            std::cout << tmp[i*n+j] << " ";
+            sum += tmp[i*n+j];
+            // std::cout << "sum = " << sum << std::endl;
+          }
+        }
+        std::cout << std::endl;
     }
+    if(std::is_same<T, int8_t>::value) {
+      std::cout << "sum = " << sum_i8 << std::endl;
+    } else {
+      std::cout << "sum = " << sum << std::endl;
+    }
+    std::cout << "=========PrintMatrixEnd========" << std::endl;
 }
 
 template <typename T>
@@ -222,46 +236,6 @@ public:
             helpers_.emplace_back(helper);
     }
     ~AttnMatmulINT8(){}
-    void ComputeForward(const framework::Tensor* weight, // [int8] which has been transformed in pass
-                        const framework::Tensor* input, // [fp16/32] 
-                        framework::Tensor* input_tmp, // [int8]  workspace
-                        const framework::Tensor* bias, //[fp16/32] 
-                        framework::Tensor* output, // [fp16/32] has been dequantized/detranspose/detranbsform
-                        framework::Tensor* output_tmp, //[int32]  workspace
-                        framework::Tensor* bias_out,
-                        cudaStream_t* streams,
-                        cudaEvent_t* stream_events
-                        ){
-        int m = m_, k = k_, n = n_;
-        //quant transpose A
-        float scale = 1.0f;
-        // elementwise mul
-        
-    
-        VLOG(1) << "[DEBUG] GEMM";
-        VLOG(1) << "input_tmp " << input_tmp->numel() << " dtype " << input_tmp->dtype();
-        VLOG(1) << "weight_tmp " << weight->numel() << " dtype " << weight->dtype();
-        VLOG(1) << "output_tmp " << output_tmp->numel() << " dtype " << output_tmp->dtype();
-
-        helpers_[0] -> GEMM(input_tmp->data<int8_t>(), weight->data<int8_t>(), output_tmp->data<int32_t>(), dev_ctx_.stream());
-        
-
-        //dequant C
-        VLOG(1) << "[DEBUG] col32_to_row_major_dequantize_kernelLauncher";
-        
-        // dequant kernel
-
-
-        if (compute_bias_) {
-            // bias_out = output + bias
-            VLOG(1) << "[DEBUG] compute_bias_";
-            std::vector<const Tensor*> ins = {output, bias};
-            std::vector<Tensor*> outs = {bias_out};
-            phi::funcs::BroadcastKernel<phi::ElementwiseType::kBinary, T, T>(
-            dev_ctx_, ins, &outs, -1, phi::funcs::AddFunctor<T>());
-            PADDLE_ENFORCE_EQ(cudaGetLastError(), cudaSuccess, platform::errors::Fatal("Add"));
-        }
-    }
 
      void ComputeForwardWoQDQ(const framework::Tensor* weight, // [int8] which has been transformed in pass
                         framework::Tensor* input, // [int8]  workspace
@@ -276,19 +250,11 @@ public:
         VLOG(1) << "input " << input->numel() << " dtype " << input->dtype();
         VLOG(1) << "weight " << weight->numel() << " dtype " << weight->dtype();
         VLOG(1) << "output " << output->numel() << " dtype " << output->dtype();
-
+        VLOG(1) << "ffn quantize";
+        PrintMatrix(input->data<int8_t>(), m_, k_);
+        // PrintMatrix(weight->data<int8_t>(), k_, n_);
         helpers_[0] -> GEMM(input->data<int8_t>(), weight->data<int8_t>(), output->data<int32_t>(), dev_ctx_.stream());
         
-
-        if (compute_bias_) {
-            // bias_out = output + bias
-            VLOG(1) << "[DEBUG] compute_bias_";
-            std::vector<const Tensor*> ins = {output, bias};
-            std::vector<Tensor*> outs = {bias_out};
-            phi::funcs::BroadcastKernel<phi::ElementwiseType::kBinary, T, T>(
-            dev_ctx_, ins, &outs, -1, phi::funcs::AddFunctor<T>());
-            PADDLE_ENFORCE_EQ(cudaGetLastError(), cudaSuccess, platform::errors::Fatal("Add"));
-        }
     }
 
     void ComputeForwardWoQ(const framework::Tensor* weight, // [int8] which has been transformed in pass
@@ -342,7 +308,7 @@ public:
                         cudaEvent_t* stream_events
                         ){
         int m = m_, k = k_, n = n_;
-        VLOG(1) << "[DEBUG] row_major_to_col32_quantize_kernelLauncher";
+        VLOG(1) << "[DEBUG] quantize_kernelLauncher";
         quantize_kernelLauncher<T>(input->data<T>(), 
                                     input_tmp->data<int8_t>(),
                                     quant_in_scale_data,
@@ -353,20 +319,12 @@ public:
         VLOG(1) << "input_tmp " << input_tmp->numel() << " dtype " << input_tmp->dtype();
         VLOG(1) << "weight_tmp " << weight->numel() << " dtype " << weight->dtype();
         VLOG(1) << "output_tmp " << output->numel() << " dtype " << output->dtype();
+        // VLOG(1) << "fmha_out quantize";
+        PrintMatrix(input_tmp->data<int8_t>(), m_, k_);
+        // PrintMatrix(weight->data<int8_t>(), k_, n_);
 
         helpers_[0] -> GEMM(input_tmp->data<int8_t>(), weight->data<int8_t>(), output->data<int32_t>(), dev_ctx_.stream());
-        
-
-        //TODO: add bias in in col32-int32 format
-        if (compute_bias_) {
-            // bias_out = output + bias
-            VLOG(1) << "[DEBUG] compute_bias_";
-            std::vector<const Tensor*> ins = {output, bias};
-            std::vector<Tensor*> outs = {bias_out};
-            phi::funcs::BroadcastKernel<phi::ElementwiseType::kBinary, T, T>(
-            dev_ctx_, ins, &outs, -1, phi::funcs::AddFunctor<T>());
-            PADDLE_ENFORCE_EQ(cudaGetLastError(), cudaSuccess, platform::errors::Fatal("Add"));
-        }
+      
     }
 
 

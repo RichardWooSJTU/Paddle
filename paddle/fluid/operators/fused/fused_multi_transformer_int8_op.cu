@@ -1164,6 +1164,35 @@ inline static double diffTime(timeval start, timeval end)
     return (end.tv_sec - start.tv_sec) * 1000 + (end.tv_usec - start.tv_usec) * 0.001;
 }
 
+// template <typename T>
+// static void PrintMatrix(T* mat_d, int m, int n) {
+//     std::vector<T> tmp(m*n);
+//     std::cout << "=========PrintMatrix========" << std::endl;
+//     cudaMemcpy(tmp.data(), mat_d, sizeof(T) * m * n, cudaMemcpyDeviceToHost);
+//     int sum_i8 = 0;
+//     T sum = static_cast<T>(0);
+//     for (int i = 0; i < m; ++i) {
+//         for (int j = 0; j < n; ++j) {
+//           if(std::is_same<T, int8_t>::value) {
+//             std::cout << static_cast<int>(tmp[i*n+j]) << " ";
+//             sum_i8 += static_cast<int>(tmp[i*n+j]);
+//           } else {
+//             std::cout << tmp[i*n+j] << " ";
+//             sum += tmp[i*n+j];
+//           }
+//         }
+//         std::cout << std::endl;
+//     }
+//     if(std::is_same<T, int8_t>::value) {
+//       std::cout << "sum = " << sum_i8 << std::endl;
+//     } else {
+//       std::cout << "sum = " << sum << std::endl;
+//     }
+//     std::cout << "=========PrintMatrixEnd========" << std::endl;
+// }
+
+
+
 template <typename T>
 class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
  public:
@@ -1423,7 +1452,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
         tmp_out.mutable_data<T>({bsz, seq_len, dim_embed}, place);
 
     auto *x_data = input_x->data<T>();
-    Tensor *buf0 = nullptr;
+    // Tensor *buf0 = nullptr;
     Tensor *buf1 = nullptr;
 
     // step0:  x   --> buf1
@@ -1431,15 +1460,15 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     // step2: buf0 --> buf1
     int layers = qkv_weights.size();
     VLOG(1) << "layers===" << layers;
-    if (layers & 1) {
+    // if (layers & 1) {
       // odd, set buf1 as out
-      buf0 = &tmp_out;
+      // buf0 = &tmp_out;
       buf1 = out;
-    } else {
+    // } else {
       // even, set buf0 as out
-      buf0 = out;
-      buf1 = &tmp_out;
-    }
+      // buf0 = out;
+      // buf1 = &tmp_out;
+    // }
 
     for (int i = 0; i < layers; ++i) {
       VLOG(1) << "LAYER " << i;
@@ -1460,6 +1489,8 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
                                   ln_mean_data,
                                   ln_var_data,
                                   qkv_in_scale[i]);
+        VLOG(1) << "ln1_out ";
+        PrintMatrix(input_workspace.data<int8_t>(), bsz_seq, dim_embed);
       } else if (!pre_layer_norm) {
         PADDLE_THROW(platform::errors::Unimplemented(
             "Unimplemented post_layer_norm for now."));
@@ -1482,6 +1513,9 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
       
       qkv_compute.ComputeForwardWoQ(
         qkv_weights[i], &input_workspace, bias, &qkv_out, &output_workspace, &qkv_out, streams, stream_events, qkv_out_scale, i * qkv_out_scale_n);
+      VLOG(1) << "qkv_out";
+      PrintMatrix(qkv_out.data<T>(), bsz_seq, 3 * dim_embed);
+
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(1) << "step2";
 #endif
@@ -1569,6 +1603,8 @@ cudaDeviceSynchronize();
                                     &qktv_out,
                                     &fmha_out);
       }
+      VLOG(1) << "fmha_out " << fmha_out.dims();
+      PrintMatrix(fmha_out.data<T>(),  num_head, dim_head);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(1) << "step3";
 #endif
@@ -1583,7 +1619,8 @@ cudaDeviceSynchronize();
       // step4. out_linear
       out_linear_compute.ComputeForwardWoDQ(
           out_linear_weights[i], out_linear_in_scale[i], &fmha_out, &input_workspace, nullptr,  &output_workspace, nullptr, streams, stream_events);
-
+      VLOG(1) << "out linear out " << output_workspace.dims();
+      PrintMatrix(output_workspace.data<int32_t>(), bsz_seq, dim_embed);
       if (time_step) { // decoder stage
         AllReduce<int32_t>(output_workspace, ring_id, bsz * 1 * num_head * dim_head, dev_ctx);
       } else if (cache_kv_out) { // context stage
@@ -1627,6 +1664,8 @@ cudaDeviceSynchronize();
             ffn1_in_scale[i]);
       } else {
       }
+      VLOG(1) << "ln out " << input_workspace.dims();
+      PrintMatrix(input_workspace.data<int8_t>(), bsz_seq, dim_embed);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(1) << "step5";
 #endif
@@ -1641,6 +1680,8 @@ cudaDeviceSynchronize();
       // step6. ffn matmul1
       ffn1_linear_compute.ComputeForwardWoQDQ(
         ffn1_weights[i], &input_workspace, nullptr, &output_workspace, nullptr, streams, stream_events);
+      VLOG(1) << "ffn1 out " << output_workspace.dims();
+      PrintMatrix(output_workspace.data<int32_t>(), bsz_seq, 4*dim_embed);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(1) << "step6";
 #endif
@@ -1679,6 +1720,8 @@ cudaDeviceSynchronize();
       // PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
       ffn2_linear_compute.ComputeForwardWoQDQ(
           ffn2_weights[i], &input_workspace, nullptr, &output_workspace, nullptr, streams, stream_events);
+        VLOG(1) << "ffn2 out " << output_workspace.dims();
+        PrintMatrix(output_workspace.data<int32_t>(), bsz_seq, dim_embed);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(1) << "step8.0";
 #endif
@@ -1716,7 +1759,7 @@ cudaDeviceSynchronize();
               ffn2_biases[i]->data<T>(),
               ln_scale_data,
               ln_bias_data,
-              buf1->data<T>(), // dropout out <T> -> x_data, buf0
+              buf1->data<T>(), // dropout out <T> -> x_data, buf1
               dropout_mask_out_data,
               input_workspace.data<int8_t>(), // out   <int8_t>     -> buf1
               ln_mean_data,
@@ -1725,6 +1768,8 @@ cudaDeviceSynchronize();
               i * ffn2_out_scale_n,
               qkv_in_scale[i+1]);
         } else {
+          VLOG(1) << "residual ";
+          PrintMatrix(bias_dropout_residual_out_data, bsz_seq, dim_embed);
           ffn2_fused_dropout_helper.ResidualDropoutBiasDQ(
               dev_ctx,
               output_workspace.data<int32_t>(), // input
@@ -1735,6 +1780,8 @@ cudaDeviceSynchronize();
               ffn2_out_scale->data<float>(),
               i * ffn2_out_scale_n);
         }
+        VLOG(1) << "final out ";
+        PrintMatrix(buf1->data<T>(), bsz_seq, dim_embed);
       } else {
       }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER

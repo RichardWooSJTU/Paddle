@@ -1069,10 +1069,14 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void fused_fast_ln_fwd_quant_dequa
 #pragma unroll
         for (int jt = 0; jt < VecSize; jt++) {
           // dropout(x) + residual
+          // printf("(x_int32[it][jt]) = %d\n", (x_int32[it][jt]));
           T tmp = (static_cast<T>(static_cast<float>(x_int32[it][jt]) * quant_out_scale[it][jt]) + bias[it][jt]) *
+          // T tmp = (static_cast<T>(static_cast<float>(x_int32[it][jt]) * 1.0f) + bias[it][jt]) *
                           static_cast<T>(mask_vec[it][jt]) * factor +
                       residual[it][jt];
+          
           x[it][jt] = tmp;
+          // printf("x[it][jt] = %f\n", x[it][jt]);
           xf[it * VecSize + jt] = U(tmp);
         }
       }
@@ -1083,6 +1087,7 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void fused_fast_ln_fwd_quant_dequa
         for (int jt = 0; jt < VecSize; jt++) {
           // dropout(x) + residual
           T tmp = static_cast<T>(static_cast<float>(x_int32[it][jt]) * quant_out_scale[it][jt]) * static_cast<T>(mask_vec[it][jt]) * factor +
+          // T tmp = static_cast<T>(static_cast<float>(x_int32[it][jt]) * 1.0f) * static_cast<T>(mask_vec[it][jt]) * factor +
                       residual[it][jt];
           x[it][jt] = tmp;
           xf[it * VecSize + jt] = U(x[it][jt]);
@@ -1191,8 +1196,12 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void fused_fast_ln_fwd_quant_dequa
         U tmp = rsigma * (static_cast<U>(xf[it * VecSize + jt]) - mu_local);
         x[it][jt] = static_cast<T>(static_cast<U>(gamma[it][jt]) * tmp +
                                    static_cast<U>(beta[it][jt]));
+        // printf("after calculate x[it][jt] = %f \t", x[it][jt]);
         x_int8[it][jt] = __float2int_rn(static_cast<float>(x[it][jt]) 
                                                                 * quant_in_scale_data);
+        // printf("\n");
+        // printf("after calculate x_int8[it][jt] = %d\t", static_cast<int32_t>(x_int8[it][jt]));
+        // printf("\n");
       }
     }
 
@@ -1909,8 +1918,10 @@ void LaunchLayernormResidualDropoutBiasQDQ(
     const float* quant_out_scale_data,
     const int quant_layer_offset,
     const float quant_in_scale_data) {
+  VLOG(1) << "cols=" << cols;
   // dropout_prob == 1.0f
   if (std::abs(dropout_prob - 1.0f) < 1e-5) {
+    VLOG(1) << "ENTER LayerNormForward";
     auto cuda_place = ctx.GetPlace();
     memory::Copy(cuda_place,
                  dst,
@@ -1986,6 +1997,7 @@ void LaunchLayernormResidualDropoutBiasQDQ(
   } break
 
 #define LAUNCH_FUSED_FAST_LN_KERNEL       \
+  LAUNCH_FUSED_FAST_LN_KERNEL_QUANT_DEQUANT_BASE(256);  \
   LAUNCH_FUSED_FAST_LN_KERNEL_QUANT_DEQUANT_BASE(768);  \
   LAUNCH_FUSED_FAST_LN_KERNEL_QUANT_DEQUANT_BASE(1024); \
   LAUNCH_FUSED_FAST_LN_KERNEL_QUANT_DEQUANT_BASE(1280); \
@@ -1995,17 +2007,20 @@ void LaunchLayernormResidualDropoutBiasQDQ(
   LAUNCH_FUSED_FAST_LN_KERNEL_QUANT_DEQUANT_BASE(3072); \
   LAUNCH_FUSED_FAST_LN_KERNEL_QUANT_DEQUANT_BASE(4096)
 
-  bool can_call_fast_ln_kernel = false;
+  // bool can_call_fast_ln_kernel = false;
+  bool can_call_fast_ln_kernel = true;
   if (((cols >= 768 && cols <= 2048 && cols % 256 == 0) || cols == 3072 ||
        cols == 4096) &&
       scale != nullptr && layernorm_bias != nullptr) {
     can_call_fast_ln_kernel = true;
   }
-  VLOG(6) << "can_call_fast_ln_kernel = " << can_call_fast_ln_kernel;
+  VLOG(1) << "can_call_fast_ln_kernel = " << can_call_fast_ln_kernel;
 
   const int VecSize = MAX_CACHE_BYTES / sizeof(T);
-  
+  VLOG(1) << "VecSize " << VecSize;
   if (cols % VecSize != 0) {
+
+    VLOG(1) << "ENTER FusedLayernormResidualDropoutBias";
     int blockDim = GetDesiredBlockDim(cols);
     FusedLayernormResidualDropoutBias<T, uint8_t, 1, U, ScaleBiasWithSameTypeX>
         <<<rows, blockDim, 0, ctx.stream()>>>(rows,
@@ -2029,6 +2044,7 @@ void LaunchLayernormResidualDropoutBiasQDQ(
   } else {
     if (can_call_fast_ln_kernel) {
       switch (cols) {
+        VLOG(1) << "ENTER LAUNCH_FUSED_FAST_LN_KERNEL";
         LAUNCH_FUSED_FAST_LN_KERNEL;
         default:
           PADDLE_THROW(platform::errors::InvalidArgument(
@@ -2038,6 +2054,7 @@ void LaunchLayernormResidualDropoutBiasQDQ(
       }
     } else {
       int blockDim = GetDesiredBlockDim(cols / VecSize);
+      VLOG(1) << "ENTER FusedLayernormResidualDropoutBias";
       FusedLayernormResidualDropoutBias<T,
                                         uint8_t,
                                         VecSize,

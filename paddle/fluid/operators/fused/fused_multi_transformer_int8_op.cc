@@ -186,12 +186,6 @@ class FusedMultiTransformerINT8OpMaker
  public:
   void Make() override {
     AddInput("X", "The input tensor.");
-    //New
-    // AddInput("InputScale", "InputScale is a one-element Tensor, which is used to quant input").AsDuplicable();
-    // AddInput("OutputScale", "OutputScale is a one-element Tensor, which is used to quant output to int8")
-    //     .AsDispensable()
-    //     .AsDuplicable();
-    //New End
     AddInput("LnScale",
              "Scale is a 1-dimensional tensor of size "
              "H. Here, H represents the last dimension of its input tensor.")
@@ -202,7 +196,6 @@ class FusedMultiTransformerINT8OpMaker
         .AsDuplicable();
     AddInput("QKVW", "The qkv weight tensor.").AsDuplicable();
     AddInput("QKVBias", "The qkv bias tensor.").AsDispensable().AsDuplicable();
-    AddInput("QKVOutScale", "QKVOutScale").AsDuplicable();
 
     AddInput("CacheKV", "(optional) The cached KV for generation inference.")
         .AsDispensable()
@@ -216,7 +209,6 @@ class FusedMultiTransformerINT8OpMaker
     AddInput("OutLinearBias", "The out_linear bias tensor.")
         .AsDispensable()
         .AsDuplicable();
-    AddInput("OutLinearOutScale", "OutLinearOutScale").AsDuplicable();
 
     AddInput("FFNLnScale", "The layer_norm scale of FusedFeedForward op")
         .AsDuplicable();
@@ -228,14 +220,18 @@ class FusedMultiTransformerINT8OpMaker
     AddInput("FFN1Bias", "The linear1 bias of FusedFeedForward op")
         .AsDispensable()
         .AsDuplicable();
-    AddInput("FFN1OutScale", "FFN1OutScale").AsDuplicable();
 
     AddInput("FFN2Weight", "The linear2 weight of FusedFeedForward op")
         .AsDuplicable();
     AddInput("FFN2Bias", "The linear2 bias input of FusedFeedForward op")
         .AsDispensable()
         .AsDuplicable();
-    AddInput("FFN2OutScale", "FFN2OutScale").AsDuplicable();
+
+
+    AddInput("QKVOutScale", "QKVOutScale").AsDispensable();
+    AddInput("OutLinearOutScale", "OutLinearOutScale").AsDispensable();
+    AddInput("FFN1OutScale", "FFN1OutScale").AsDispensable();
+    AddInput("FFN2OutScale", "FFN2OutScale").AsDispensable();
 
     AddOutput("CacheKVOut", "The updated cache KV. Inplace with CacheKV")
         .AsDispensable()
@@ -320,17 +316,6 @@ class FusedMultiTransformerINT8OpMaker
     AddAttr<std::vector<float>>(
         "ffn2_in_scale", "ffn2_in_scale").SetDefault({});
 
-    // AddAttr<std::vector<std::vector<float>>>(
-    //     "qkv_out_scale", "qkv_out_scale").SetDefault({});
-
-    // AddAttr<std::vector<std::vector<float>>>(
-    //     "out_linear_out_scale", "out_linear_out_scale").SetDefault({});
-
-    // AddAttr<std::vector<std::vector<float>>>(
-    //     "ffn1_out_scale", "ffn1_out_scale").SetDefault({});
-
-    // AddAttr<std::vector<std::vector<float>>>(
-    //     "ffn2_out_scale", "ffn2_out_scale").SetDefault({});
 
     AddComment(R"DOC(fused multi transformer layers op)DOC");
   }
