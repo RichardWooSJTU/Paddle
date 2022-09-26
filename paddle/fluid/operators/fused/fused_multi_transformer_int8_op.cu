@@ -71,7 +71,8 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     auto ln_biases = ctx.MultiInput<Tensor>("LnBias");
 
     auto ln_compute =
-        AttnLayerNorm<T, T, int8_t>(dev_ctx, epsilon, bsz_seq, dim_embed);
+        // AttnLayerNorm<T, T, int8_t>(dev_ctx, epsilon, bsz_seq, dim_embed);
+        AttnLayerNorm<T>(dev_ctx, epsilon, bsz_seq, dim_embed);
     Tensor ln_mean, ln_var;
     ln_mean.Resize({{bsz_seq}});
     auto *ln_mean_data =
@@ -134,12 +135,14 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
       out_seq_len += time_step_value;
     }
 
-    Tensor transpose_out_2, qk_out;
+    Tensor transpose_out_2, qk_out, src_mask_out;
     transpose_out_2.Resize({{3, bsz, num_head, seq_len, dim_head}});
     auto *transpose_out_2_data =
         dev_ctx.Alloc<T>(&transpose_out_2, transpose_out_2.numel() * sizeof(T));
     qk_out.Resize({{bsz, num_head, seq_len, out_seq_len}});
     auto *qk_out_data = dev_ctx.Alloc<T>(&qk_out, qk_out.numel() * sizeof(T));
+    src_mask_out.Resize({{bsz, num_head, seq_len, out_seq_len}});
+    auto* src_mask_out_data = dev_ctx.Alloc<T>(&src_mask_out, src_mask_out.numel() * sizeof(T));
 
     Tensor softmax_out;
     Tensor attn_dropout_mask_out, attn_dropout_out;
@@ -172,12 +175,14 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 
     // 5. ln(residual + bias)
     DropoutParam dropout_param2(true, 0, true, true, 0.0, nullptr, 0);
-    FusedDropoutLayerNormHelper<T, uint8_t, int32_t, int8_t>
-        fused_dropout_layernorm_helper(
-            dev_ctx, bsz_seq, dim_embed, dropout_param2, epsilon);
+    // FusedDropoutLayerNormHelper<T, uint8_t, int32_t, int8_t>
+    //     fused_dropout_layernorm_helper(
+    //         dev_ctx, bsz_seq, dim_embed, dropout_param2, epsilon);
     FusedDropoutLayerNormHelper<T, uint8_t>
         fused_dropout_layernorm_helper_for_post_layernorm(
             dev_ctx, bsz_seq, dim_embed, dropout_param2, epsilon);
+    FusedDropoutLayerNormHelper<T, uint8_t> fused_dropout_layernorm_helper(
+        dev_ctx, bsz_seq, dim_embed, dropout_param2, epsilon);
     auto ffn_ln_scales = ctx.MultiInput<Tensor>("FFNLnScale");
     auto ffn_ln_biases = ctx.MultiInput<Tensor>("FFNLnBias");
     Tensor bias_dropout_residual_out, dropout_mask_out;
@@ -207,7 +212,9 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 
     // 7. ffn act + bias
     DropoutParam ffn1_dropout_param(true, 0, true, true, 0.0, nullptr, 0);
-    FusedDropoutHelper<T, uint8_t, int32_t, int8_t> fused_act_dropout_helper(
+    // FusedDropoutHelper<T, uint8_t, int32_t, int8_t> fused_act_dropout_helper(
+    //     dev_ctx, bsz_seq, dim_ffn, ffn1_dropout_param);
+    FusedDropoutHelper<T, uint8_t> fused_act_dropout_helper(
         dev_ctx, bsz_seq, dim_ffn, ffn1_dropout_param);
     FusedDropoutHelper<T, uint8_t> fused_act_dropout_helper_for_post_layernorm(
         dev_ctx, bsz_seq, dim_ffn, ffn1_dropout_param);
@@ -227,9 +234,11 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 
     // 9. ffn2 residual bias
     DropoutParam ffn2_dropout_param(true, 0, true, true, 0.0, nullptr, 0);
-    FusedDropoutLayerNormHelper<T, uint8_t, int32_t, int8_t>
-        ffn2_fused_dropout_helper(
-            dev_ctx, bsz_seq, dim_embed, ffn2_dropout_param, epsilon);
+    // FusedDropoutLayerNormHelper<T, uint8_t, int32_t, int8_t>
+    //     ffn2_fused_dropout_helper(
+    //         dev_ctx, bsz_seq, dim_embed, ffn2_dropout_param, epsilon);
+    FusedDropoutLayerNormHelper<T, uint8_t> ffn2_fused_dropout_helper(
+        dev_ctx, bsz_seq, dim_embed, ffn2_dropout_param, epsilon);
     FusedDropoutLayerNormHelper<T, uint8_t, int32_t, T>
         ffn2_fused_dropout_dequant_helper(
             dev_ctx, bsz_seq, dim_embed, ffn2_dropout_param, epsilon);
@@ -269,7 +278,15 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     // step2: buf0 --> buf1
     int layers = qkv_weights.size();
     if (pre_layer_norm) {
-      buf1 = out;
+      if (layers & 1) {
+        // odd, set buf1 as out
+        buf0 = &tmp_out;
+        buf1 = out;
+      } else {
+        // even, set buf0 as out
+        buf0 = out;
+        buf1 = &tmp_out;
+      }
     } else {
       buf0 = &tmp_out;
       buf1 = out;
@@ -281,22 +298,24 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
       if (i == 0 && pre_layer_norm) {
         auto *ln_scale_data = ln_scales[i]->data<U>();
         auto *ln_bias_data = ln_biases[i]->data<U>();
-        // TODO(wangxi): can remove mean var in inference
-
-        PrintMatrix(x_data, input_x->numel(), "infer_pre_ln_intput_" + std::to_string(i) + "_float", i, is_encoder);
+        // ln_compute.ComputeForward(x_data,
+        //                           ln_scale_data,
+        //                           ln_bias_data,
+        //                           input_workspace.data<int8_t>(),
+        //                           ln_mean_data,
+        //                           ln_var_data,
+        //                           nullptr,
+        //                           0,
+        //                           qkv_in_scale[i],
+        //                           quant_round_type,
+        //                           quant_max_bound,
+        //                           quant_min_bound);
         ln_compute.ComputeForward(x_data,
                                   ln_scale_data,
                                   ln_bias_data,
-                                  input_workspace.data<int8_t>(),
+                                  buf1->data<T>(),
                                   ln_mean_data,
-                                  ln_var_data,
-                                  nullptr,
-                                  0,
-                                  qkv_in_scale[i],
-                                  quant_round_type,
-                                  quant_max_bound,
-                                  quant_min_bound);
-        PrintMatrix(input_workspace.data<int8_t>(), bsz_seq * dim_embed, "infer_qkv_in_" + std::to_string(i) + "_int8", i, is_encoder);
+                                  ln_var_data);
       }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step1";
@@ -335,15 +354,28 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
                                    quant_max_bound,
                                    quant_min_bound);
       } else {
-        qkv_compute.ComputeForwardINT8ToT(qkv_weights[i],
-                                          qkv_in_scale[i],
-                                          &input_workspace,
-                                          bias,
-                                          &qkv_out,
-                                          &output_workspace,
-                                          &qkv_out,
-                                          qkv_out_scale,
-                                          i * qkv_out_scale_n);
+        // qkv_compute.ComputeForwardINT8ToT(qkv_weights[i],
+        //                                   qkv_in_scale[i],
+        //                                   &input_workspace,
+        //                                   bias,
+        //                                   &qkv_out,
+        //                                   &output_workspace,
+        //                                   &qkv_out,
+        //                                   qkv_out_scale,
+        //                                   i * qkv_out_scale_n);
+        qkv_compute.ComputeForward(qkv_weights[i],
+                                   buf1,
+                                   &input_workspace,
+                                   bias,
+                                   &qkv_out,
+                                   &output_workspace,
+                                   &qkv_out,
+                                   qkv_in_scale[i],
+                                   qkv_out_scale,
+                                   i * qkv_out_scale_n,
+                                   quant_round_type,
+                                   quant_max_bound,
+                                   quant_min_bound);
       }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step2";
@@ -376,7 +408,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
                                     &transpose_out_2,
                                     nullptr,
                                     &qk_out,
-                                    nullptr,
+                                    &src_mask_out, //debug
                                     &softmax_out,
                                     &attn_dropout_mask_out,
                                     &attn_dropout_out,
@@ -430,21 +462,36 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 #endif
 
       if (pre_layer_norm) {
-        PrintMatrix(fmha_out.data<T>(),  fmha_out.numel(), "infer_out_linear_in_" + std::to_string(layer) + "_float", layer, is_encoder);
-        out_linear_compute.ComputeForwardTToINT8(out_linear_weights[i],
-                                                 out_linear_in_scale[i],
-                                                 &fmha_out,
-                                                 &input_workspace,
-                                                 nullptr,
-                                                 &output_workspace,
-                                                 nullptr,
-                                                 quant_round_type,
-                                                 quant_max_bound,
-                                                 quant_min_bound);
-        AllReduce<int32_t>(output_workspace,
-                           ring_id,
-                           bsz * seq_len * num_head * dim_head,
-                           dev_ctx);
+        // PrintMatrix(fmha_out.data<T>(),  fmha_out.numel(), "infer_out_linear_in_" + std::to_string(layer) + "_float", layer, is_encoder);
+        // out_linear_compute.ComputeForwardTToINT8(out_linear_weights[i],
+        //                                          out_linear_in_scale[i],
+        //                                          &fmha_out,
+        //                                          &input_workspace,
+        //                                          nullptr,
+        //                                          &output_workspace,
+        //                                          nullptr,
+        //                                          quant_round_type,
+        //                                          quant_max_bound,
+        //                                          quant_min_bound);
+
+        // AllReduce<int32_t>(output_workspace,
+        //                    ring_id,
+        //                    bsz * seq_len * num_head * dim_head,
+        //                    dev_ctx);
+        out_linear_compute.ComputeForward(out_linear_weights[i],
+                                          &fmha_out,
+                                          &input_workspace,
+                                          nullptr,
+                                          buf1,
+                                          &output_workspace,
+                                          nullptr,
+                                          out_linear_in_scale[i],
+                                          out_linear_out_scale,
+                                          i * out_linear_out_scale_n,
+                                          quant_round_type,
+                                          quant_max_bound,
+                                          quant_min_bound);
+        AllReduce<T>(*buf1, ring_id, buf1->numel(), dev_ctx);
       } else {
         out_linear_compute.ComputeForward(out_linear_weights[i],
                                           &fmha_out,
@@ -471,27 +518,40 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
         auto *ln_bias_data = ffn_ln_biases[i]->data<U>();
         auto *out_linear_bias_data = out_linear_biases[i]->data<T>();
 
+        // // inplace
+        // // non-inplace: buf1 -> input_workspace
+        // fused_dropout_layernorm_helper.LayernormResidualDropoutBias(
+        //     dev_ctx,
+        //     output_workspace.data<int32_t>(),
+        //     x_data,
+        //     out_linear_bias_data,
+        //     ln_scale_data,
+        //     ln_bias_data,
+        //     bias_dropout_residual_out_data,
+        //     dropout_mask_out_data,
+        //     input_workspace.data<int8_t>(),
+        //     ln_mean_data,
+        //     ln_var_data,
+        //     out_linear_in_scale[i],
+        //     out_linear_out_scale->data<float>(),
+        //     i * out_linear_out_scale_n,
+        //     ffn1_in_scale[i],
+        //     quant_round_type,
+        //     quant_max_bound,
+        //     quant_min_bound);
         // inplace
-        // non-inplace: buf1 -> input_workspace
         fused_dropout_layernorm_helper.LayernormResidualDropoutBias(
             dev_ctx,
-            output_workspace.data<int32_t>(),
+            buf1->data<T>(),
             x_data,
             out_linear_bias_data,
             ln_scale_data,
             ln_bias_data,
             bias_dropout_residual_out_data,
             dropout_mask_out_data,
-            input_workspace.data<int8_t>(),
+            buf1->data<T>(),
             ln_mean_data,
-            ln_var_data,
-            out_linear_in_scale[i],
-            out_linear_out_scale->data<float>(),
-            i * out_linear_out_scale_n,
-            ffn1_in_scale[i],
-            quant_round_type,
-            quant_max_bound,
-            quant_min_bound);
+            ln_var_data);
       } else {
         auto *ln_scale_data = ln_scales[i]->data<U>();
         auto *ln_bias_data = ln_biases[i]->data<U>();
@@ -518,13 +578,26 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 
       if (pre_layer_norm) {
 
-        PrintMatrix(input_workspace.data<int8_t>(),  bsz_seq * dim_embed, "infer_ffn1_in_" + std::to_string(layer) + "_int", layer, is_encoder);
-        ffn1_linear_compute.ComputeForwardINT8ToINT8(ffn1_weights[i],
-                                                     &input_workspace,
-                                                     nullptr,
-                                                     &output_workspace,
-                                                     nullptr);
-        PrintMatrix(output_workspace.data<int32_t>(),  bsz_seq * dim_ffn, "infer_ffn1_out_" + std::to_string(layer) + "_int", layer, is_encoder);
+        // PrintMatrix(input_workspace.data<int8_t>(),  bsz_seq * dim_embed, "infer_ffn1_in_" + std::to_string(layer) + "_int", layer, is_encoder);
+        // ffn1_linear_compute.ComputeForwardINT8ToINT8(ffn1_weights[i],
+        //                                              &input_workspace,
+        //                                              nullptr,
+        //                                              &output_workspace,
+        //                                              nullptr);
+        ffn1_linear_compute.ComputeForward(ffn1_weights[i],
+                                           buf1,
+                                           &input_workspace,
+                                           nullptr,
+                                           &ffn1_out,
+                                           &output_workspace,
+                                           nullptr,
+                                           ffn1_in_scale[i],
+                                           ffn1_out_scale,
+                                           i * ffn1_out_scale_n,
+                                           quant_round_type,
+                                           quant_max_bound,
+                                           quant_min_bound);
+        // PrintMatrix(output_workspace.data<int32_t>(),  bsz_seq * dim_ffn, "infer_ffn1_out_" + std::to_string(layer) + "_int", layer, is_encoder);
       } else {
         ffn1_linear_compute.ComputeForward(ffn1_weights[i],
                                            buf1,
@@ -549,20 +622,26 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 
       VLOG(1) << "cache_kv_out" <<cache_kv_out->dtype();
       if (pre_layer_norm) {
-        fused_act_dropout_helper.DropoutActBias(
-            dev_ctx,
-            output_workspace.data<int32_t>(),
-            ffn1_biases[i]->data<T>(),
-            "gelu",
-            input_workspace.data<int8_t>(),
-            ffn1_dropout_mask_data,
-            ffn1_in_scale[i],
-            ffn1_out_scale->data<float>(),
-            i * ffn1_out_scale_n,
-            ffn2_in_scale[i],
-            quant_round_type,
-            quant_max_bound,
-            quant_min_bound);
+        // fused_act_dropout_helper.DropoutActBias(
+        //     dev_ctx,
+        //     output_workspace.data<int32_t>(),
+        //     ffn1_biases[i]->data<T>(),
+        //     "gelu",
+        //     input_workspace.data<int8_t>(),
+        //     ffn1_dropout_mask_data,
+        //     ffn1_in_scale[i],
+        //     ffn1_out_scale->data<float>(),
+        //     i * ffn1_out_scale_n,
+        //     ffn2_in_scale[i],
+        //     quant_round_type,
+        //     quant_max_bound,
+        //     quant_min_bound);
+        fused_act_dropout_helper.DropoutActBias(dev_ctx,
+                                              ffn1_out_data,
+                                              ffn1_biases[i]->data<T>(),
+                                              "gelu",
+                                              ffn1_dropout_out_data,
+                                              ffn1_dropout_mask_data);
       } else {
         fused_act_dropout_helper_for_post_layernorm.DropoutActBias(
             dev_ctx,
@@ -578,13 +657,26 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 
       // step8. ffn matmul2
       if (pre_layer_norm) {
-        PrintMatrix(input_workspace.data<int8_t>(),  bsz_seq * dim_ffn, "infer_ffn2_in_" + std::to_string(layer) + "_int", layer, is_encoder);
-        ffn2_linear_compute.ComputeForwardINT8ToINT8(ffn2_weights[i],
-                                                     &input_workspace,
-                                                     nullptr,
-                                                     &output_workspace,
-                                                     nullptr);
-        PrintMatrix(output_workspace.data<int32_t>(),  bsz_seq * dim_embed, "infer_ffn2_out_" + std::to_string(layer) + "_int", layer, is_encoder);
+        // PrintMatrix(input_workspace.data<int8_t>(),  bsz_seq * dim_ffn, "infer_ffn2_in_" + std::to_string(layer) + "_int", layer, is_encoder);
+        // ffn2_linear_compute.ComputeForwardINT8ToINT8(ffn2_weights[i],
+        //                                              &input_workspace,
+        //                                              nullptr,
+        //                                              &output_workspace,
+        //                                              nullptr);
+        // PrintMatrix(output_workspace.data<int32_t>(),  bsz_seq * dim_embed, "infer_ffn2_out_" + std::to_string(layer) + "_int", layer, is_encoder);
+        ffn2_linear_compute.ComputeForward(ffn2_weights[i],
+                                           &ffn1_dropout_out,
+                                           &input_workspace,
+                                           nullptr,
+                                           buf1,
+                                           &output_workspace,
+                                           nullptr,
+                                           ffn2_in_scale[i],
+                                           ffn2_out_scale,
+                                           i * ffn2_out_scale_n,
+                                           quant_round_type,
+                                           quant_max_bound,
+                                           quant_min_bound);
       } else {
         ffn2_linear_compute.ComputeForward(ffn2_weights[i],
                                            &ffn1_dropout_out,
@@ -605,10 +697,11 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 #endif
 
       if (pre_layer_norm) {
-        AllReduce<int32_t>(output_workspace,
-                           ring_id,
-                           bsz * seq_len * num_head * dim_head,
-                           dev_ctx);
+        // AllReduce<int32_t>(output_workspace,
+        //                    ring_id,
+        //                    bsz * seq_len * num_head * dim_head,
+        //                    dev_ctx);
+        AllReduce<T>(*buf1, ring_id, buf1->numel(), dev_ctx);
       } else {
         AllReduce<T>(*buf0, ring_id, buf0->numel(), dev_ctx);
       }
@@ -623,37 +716,56 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
           auto *ln_scale_data = ln_scales[i + 1]->data<U>();
           auto *ln_bias_data = ln_biases[i + 1]->data<U>();
 
+          // ffn2_fused_dropout_helper.LayernormResidualDropoutBias(
+          //     dev_ctx,
+          //     output_workspace.data<int32_t>(),
+          //     bias_dropout_residual_out_data,
+          //     ffn2_biases[i]->data<T>(),
+          //     ln_scale_data,
+          //     ln_bias_data,
+          //     buf1->data<T>(),
+          //     dropout_mask_out_data,
+          //     input_workspace.data<int8_t>(),
+          //     ln_mean_data,
+          //     ln_var_data,
+          //     ffn2_in_scale[i],
+          //     ffn2_out_scale->data<float>(),
+          //     i * ffn2_out_scale_n,
+          //     qkv_in_scale[i + 1],
+          //     quant_round_type,
+          //     quant_max_bound,
+          //     quant_min_bound);
           ffn2_fused_dropout_helper.LayernormResidualDropoutBias(
               dev_ctx,
-              output_workspace.data<int32_t>(),
+              buf1->data<T>(),
               bias_dropout_residual_out_data,
               ffn2_biases[i]->data<T>(),
               ln_scale_data,
               ln_bias_data,
               buf1->data<T>(),
               dropout_mask_out_data,
-              input_workspace.data<int8_t>(),
+              buf0->data<T>(),
               ln_mean_data,
-              ln_var_data,
-              ffn2_in_scale[i],
-              ffn2_out_scale->data<float>(),
-              i * ffn2_out_scale_n,
-              qkv_in_scale[i + 1],
-              quant_round_type,
-              quant_max_bound,
-              quant_min_bound);
+              ln_var_data);
         } else {
-          ffn2_fused_dropout_dequant_helper.ResidualDropoutBias(
+          // ffn2_fused_dropout_dequant_helper.ResidualDropoutBias(
+          //     dev_ctx,
+          //     output_workspace.data<int32_t>(),
+          //     bias_dropout_residual_out_data,
+          //     ffn2_biases[i]->data<T>(),
+          //     buf1->data<T>(),
+          //     dropout_mask_out_data,
+          //     ffn2_in_scale[i],
+          //     ffn2_out_scale->data<float>(),
+          //     i * ffn2_out_scale_n,
+          //     1.0);
+          ffn2_fused_dropout_helper.ResidualDropoutBias(
               dev_ctx,
-              output_workspace.data<int32_t>(),
+              buf1->data<T>(),
               bias_dropout_residual_out_data,
               ffn2_biases[i]->data<T>(),
               buf1->data<T>(),
-              dropout_mask_out_data,
-              ffn2_in_scale[i],
-              ffn2_out_scale->data<float>(),
-              i * ffn2_out_scale_n,
-              1.0);
+              dropout_mask_out_data);
         }
       } else {
         auto *ln_scale_data = ffn_ln_scales[i]->data<U>();
@@ -676,6 +788,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 #endif
       if (pre_layer_norm) {
         x_data = buf1->data<T>();
+        std::swap(buf0, buf1);
       }
     }
 
