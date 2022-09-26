@@ -26,7 +26,46 @@ limitations under the License. */
 namespace paddle {
 namespace operators {
 
+#define DEBUG_PRINT
+const std::unordered_set<int> debug_layers{0};
+
 using Tensor = framework::Tensor;
+
+#ifdef DEBUG_PRINT
+template <typename T>
+static void PrintMatrix(const T* mat_d, int num, std::string name, int layer=0, bool is_enable=false) {
+  if (!is_enable) return;
+  if (debug_layers.count(layer) == 0) return;
+
+    std::vector<T> tmp(num);
+    cudaMemcpy(tmp.data(), mat_d, sizeof(T) * num, cudaMemcpyDeviceToHost);
+    int sum_i8 = 0;
+    T sum = static_cast<T>(0);
+
+    std::ofstream outfile;
+    outfile.open(name+".txt", std::ios::out);
+
+    for (int i = 0; i < num; ++i) {
+      if(std::is_same<T, int8_t>::value) {
+        outfile << static_cast<int>(tmp[i]) << std::endl;
+        // sum_i8 += static_cast<int>(tmp[i*n+j]);
+      } else {
+        outfile << tmp[i] << std::endl;
+        // sum += tmp[i*n+j];
+      }
+    }
+    // if(std::is_same<T, int8_t>::value) {
+    //   std::cout << "sum = " << sum_i8 << std::endl;
+    // } else {
+    //   std::cout << "sum = " << sum << std::endl;
+    // }
+    outfile.close();
+}
+#else
+template <typename T>
+static void PrintMatrix(const T* mat_d, int num, std::string name, int layer=0, bool is_enable=false) {
+}
+#endif
 
 template <typename T>
 class AttnMatmulINT8 {

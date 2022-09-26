@@ -22,6 +22,11 @@ template <typename T>
 class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
  public:
   void Compute(const framework::ExecutionContext &ctx) const override {
+    if (std::is_same<T, float>::value) {
+      VLOG(1) << "==== Use fp32";
+    } else {
+      VLOG(1) << "==== Use fp16";
+    }
     using U = LayerNormParamType<T>;
     auto &dev_ctx = ctx.cuda_device_context();
 
@@ -106,7 +111,9 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     // auto *time_step = ctx.Input<Tensor>("TimeStep");
 
     auto out_seq_len = seq_len;
+    bool is_encoder = true;
     if (time_step) {
+      is_encoder = false;
       PADDLE_ENFORCE_EQ(time_step->place(),
                         platform::CPUPlace(),
                         platform::errors::PreconditionNotMet(
@@ -252,7 +259,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     tmp_out.Resize({{bsz, seq_len, dim_embed}});
     auto *tmp_out_data =
         dev_ctx.Alloc<T>(&tmp_out, tmp_out.numel() * sizeof(T));
-
+    VLOG(1) << "input_x" <<input_x->dtype();
     auto *x_data = input_x->data<T>();
     Tensor *buf0 = nullptr;
     Tensor *buf1 = nullptr;
@@ -274,6 +281,8 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
         auto *ln_scale_data = ln_scales[i]->data<U>();
         auto *ln_bias_data = ln_biases[i]->data<U>();
         // TODO(wangxi): can remove mean var in inference
+
+        PrintMatrix(x_data, input_x->numel(), "pre_ln_intput_" + std::to_string(i) + "_float.txt", i, is_encoder);
         ln_compute.ComputeForward(x_data,
                                   ln_scale_data,
                                   ln_bias_data,
@@ -286,6 +295,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
                                   quant_round_type,
                                   quant_max_bound,
                                   quant_min_bound);
+        PrintMatrix(input_workspace.data<int8_t>(), dim_embed, "qkv_in_" + std::to_string(i) + "_int8.txt", i, is_encoder);
       }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step1";
@@ -381,6 +391,8 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 
         // [2, bsz, num_head, max_seq_len, head_dim]
         int max_seq_len = cache_kv_out->dims()[3];
+
+        VLOG(1) << "cache_kv_out" <<cache_kv_out->dtype();
         T *cache_kv_data = cache_kv_out->data<T>();
         int64_t cache_k_size = bsz * num_head * max_seq_len * dim_head;
 
@@ -529,6 +541,8 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 
       // step7. act bias
       // TODO(wangxi): remove dropout mask in inference
+
+      VLOG(1) << "cache_kv_out" <<cache_kv_out->dtype();
       if (pre_layer_norm) {
         fused_act_dropout_helper.DropoutActBias(
             dev_ctx,
