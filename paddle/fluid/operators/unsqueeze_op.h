@@ -29,6 +29,8 @@ template <typename DeviceContext, typename T>
 class UnsqueezeKernel : public framework::OpKernel<T> {
  public:
   void Compute(const framework::ExecutionContext &context) const override {
+    // PADDLE_ENFORCE_GPU_SUCCESS(cudaGetLastError());
+    VLOG(1) << "Enter UnsqueezeKernel";
     auto axes = context.Attr<std::vector<int>>("axes");
     auto *in = context.Input<framework::LoDTensor>("X");
     auto *out = context.Output<framework::LoDTensor>("Out");
@@ -107,6 +109,7 @@ class UnsqueezeKernel : public framework::OpKernel<T> {
     }
 
     return phi::make_ddim(output_shape);
+    // PADDLE_ENFORCE_GPU_SUCCESS(cudaGetLastError());
   }
 };
 

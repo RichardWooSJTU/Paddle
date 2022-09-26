@@ -22,6 +22,7 @@ template <typename T>
 class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
  public:
   void Compute(const framework::ExecutionContext &ctx) const override {
+    // PADDLE_ENFORCE_GPU_SUCCESS(cudaGetLastError());
     if (std::is_same<T, float>::value) {
       VLOG(1) << "==== Use fp32";
     } else {
@@ -111,7 +112,6 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     // auto *time_step = ctx.Input<Tensor>("TimeStep");
 
     auto out_seq_len = seq_len;
-    bool is_encoder = true;
     if (time_step) {
       is_encoder = false;
       PADDLE_ENFORCE_EQ(time_step->place(),
@@ -276,13 +276,14 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     }
 
     for (int i = 0; i < layers; ++i) {
+      layer = i;
       // step1. layer_norm
       if (i == 0 && pre_layer_norm) {
         auto *ln_scale_data = ln_scales[i]->data<U>();
         auto *ln_bias_data = ln_biases[i]->data<U>();
         // TODO(wangxi): can remove mean var in inference
 
-        PrintMatrix(x_data, input_x->numel(), "pre_ln_intput_" + std::to_string(i) + "_float.txt", i, is_encoder);
+        PrintMatrix(x_data, input_x->numel(), "infer_pre_ln_intput_" + std::to_string(i) + "_float", i, is_encoder);
         ln_compute.ComputeForward(x_data,
                                   ln_scale_data,
                                   ln_bias_data,
@@ -295,7 +296,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
                                   quant_round_type,
                                   quant_max_bound,
                                   quant_min_bound);
-        PrintMatrix(input_workspace.data<int8_t>(), dim_embed, "qkv_in_" + std::to_string(i) + "_int8.txt", i, is_encoder);
+        PrintMatrix(input_workspace.data<int8_t>(), bsz_seq * dim_embed, "infer_qkv_in_" + std::to_string(i) + "_int8", i, is_encoder);
       }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step1";
@@ -429,6 +430,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 #endif
 
       if (pre_layer_norm) {
+        PrintMatrix(fmha_out.data<T>(),  fmha_out.numel(), "infer_out_linear_in_" + std::to_string(layer) + "_float", layer, is_encoder);
         out_linear_compute.ComputeForwardTToINT8(out_linear_weights[i],
                                                  out_linear_in_scale[i],
                                                  &fmha_out,
@@ -515,11 +517,14 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
       // step6. ffn matmul1
 
       if (pre_layer_norm) {
+
+        PrintMatrix(input_workspace.data<int8_t>(),  bsz_seq * dim_embed, "infer_ffn1_in_" + std::to_string(layer) + "_int", layer, is_encoder);
         ffn1_linear_compute.ComputeForwardINT8ToINT8(ffn1_weights[i],
                                                      &input_workspace,
                                                      nullptr,
                                                      &output_workspace,
                                                      nullptr);
+        PrintMatrix(output_workspace.data<int32_t>(),  bsz_seq * dim_ffn, "infer_ffn1_out_" + std::to_string(layer) + "_int", layer, is_encoder);
       } else {
         ffn1_linear_compute.ComputeForward(ffn1_weights[i],
                                            buf1,
@@ -573,11 +578,13 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 
       // step8. ffn matmul2
       if (pre_layer_norm) {
+        PrintMatrix(input_workspace.data<int8_t>(),  bsz_seq * dim_ffn, "infer_ffn2_in_" + std::to_string(layer) + "_int", layer, is_encoder);
         ffn2_linear_compute.ComputeForwardINT8ToINT8(ffn2_weights[i],
                                                      &input_workspace,
                                                      nullptr,
                                                      &output_workspace,
                                                      nullptr);
+        PrintMatrix(output_workspace.data<int32_t>(),  bsz_seq * dim_embed, "infer_ffn2_out_" + std::to_string(layer) + "_int", layer, is_encoder);
       } else {
         ffn2_linear_compute.ComputeForward(ffn2_weights[i],
                                            &ffn1_dropout_out,
@@ -671,6 +678,8 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
         x_data = buf1->data<T>();
       }
     }
+
+    // PADDLE_ENFORCE_GPU_SUCCESS(cudaGetLastError());
   }
 };
 

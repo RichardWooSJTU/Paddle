@@ -48,6 +48,8 @@ void ScaleKernel(const Context& dev_ctx,
                  float bias,
                  bool bias_after_scale,
                  DenseTensor* out) {
+  
+  // PADDLE_ENFORCE_GPU_SUCCESS(cudaGetLastError());
   std::vector<const DenseTensor*> inputs;
   std::vector<DenseTensor*> outputs;
   inputs.emplace_back(&x);
@@ -58,6 +60,8 @@ void ScaleKernel(const Context& dev_ctx,
       inputs,
       &outputs,
       ScaleFunctor<T>(scale.to<T>(), static_cast<T>(bias), bias_after_scale));
+  
+  // PADDLE_ENFORCE_GPU_SUCCESS(cudaGetLastError());
 }
 
 }  // namespace phi
