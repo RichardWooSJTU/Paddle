@@ -118,13 +118,13 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 
     auto out_seq_len = seq_len;
     if (time_step) {
-      is_encoder = false;
       PADDLE_ENFORCE_EQ(time_step->place(),
                         platform::CPUPlace(),
                         platform::errors::PreconditionNotMet(
                             "The place of input(TimeStep) must be CPUPlace."));
       // cache_seq_len
       int time_step_value = time_step->data<int>()[0];
+      step++;
       PADDLE_ENFORCE_GT(time_step_value,
                         0,
                         platform::errors::PreconditionNotMet(
@@ -395,7 +395,8 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
                                    i * qkv_out_scale_n,
                                    quant_round_type,
                                    quant_max_bound,
-                                   quant_min_bound);
+                                   quant_min_bound,
+                                   "qkv");
       }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step2";
@@ -510,7 +511,8 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
                                           i * out_linear_out_scale_n,
                                           quant_round_type,
                                           quant_max_bound,
-                                          quant_min_bound);
+                                          quant_min_bound,
+                                          "out_linear");
         AllReduce<T>(*buf1, ring_id, buf1->numel(), dev_ctx);
       } else {
         out_linear_compute.ComputeForward(out_linear_weights[i],
@@ -647,7 +649,8 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
                                            i * ffn1_out_scale_n,
                                            quant_round_type,
                                            quant_max_bound,
-                                           quant_min_bound);
+                                           quant_min_bound,
+                                           "ffn1");
         // PrintMatrix(output_workspace.data<int32_t>(),  bsz_seq * dim_ffn, "infer_ffn1_out_" + std::to_string(layer) + "_int", layer, is_encoder);
       } else {
         ffn1_linear_compute.ComputeForward(ffn1_weights[i],
@@ -742,7 +745,8 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
                                            i * ffn2_out_scale_n,
                                            quant_round_type,
                                            quant_max_bound,
-                                           quant_min_bound);
+                                           quant_min_bound,
+                                           "ffn2");
       } else {
         ffn2_linear_compute.ComputeForward(ffn2_weights[i],
                                            &ffn1_dropout_out,

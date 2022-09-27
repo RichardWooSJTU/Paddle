@@ -27,17 +27,18 @@ namespace paddle {
 namespace operators {
 
 // #define DEBUG_PRINT
-const std::unordered_set<int> debug_layers{1,2,3,4,5};
-static bool is_encoder = true;
+const std::unordered_set<int> debug_layers{0,1,2,3,4,5};
+const std::unordered_set<int> debug_steps{1};
+static int step = 0;
 static int layer = 0;
 
 using Tensor = framework::Tensor;
 
 #ifdef DEBUG_PRINT
 template <typename T>
-static void PrintMatrix(const T* mat_d, int num, std::string name, int layer=0, bool is_enable=false) {
-  if (!is_enable) return;
+static void PrintMatrix(const T* mat_d, int num, std::string name) {
   if (debug_layers.count(layer) == 0) return;
+  if (debug_steps.count(step) == 0) return;
 
     std::vector<T> tmp(num);
     cudaMemcpy(tmp.data(), mat_d, sizeof(T) * num, cudaMemcpyDeviceToHost);
@@ -45,7 +46,7 @@ static void PrintMatrix(const T* mat_d, int num, std::string name, int layer=0, 
     T sum = static_cast<T>(0);
 
     std::ofstream outfile;
-    outfile.open(name+".txt", std::ios::out);
+    outfile.open(name+"_" + std::to_string(step) + ".txt", std::ios::out);
     std::stringstream ss;
 
     for (int i = 0; i < num; ++i) {
@@ -67,7 +68,7 @@ static void PrintMatrix(const T* mat_d, int num, std::string name, int layer=0, 
 }
 #else
 template <typename T>
-static void PrintMatrix(const T* mat_d, int num, std::string name, int layer=0, bool is_enable=false) {
+static void PrintMatrix(const T* mat_d, int num, std::string name) {
 }
 #endif
 
@@ -96,7 +97,9 @@ class AttnMatmulINT8 {
                       const int quant_out_scale_offset,
                       const int quant_round_type = 1,
                       const float quant_max_bound = 127.0,
-                      const float quant_min_bound = -127.0) {
+                      const float quant_min_bound = -127.0,
+                      const std::string name = "") {
+    PrintMatrix(input->data<T>(),  input->numel(), "inference_" + name + "_input_" + std::to_string(layer) + "_float");
     quantize_kernel_launcher<T>(input->data<T>(),
                                 input_tmp->data<int8_t>(),
                                 quant_in_scale,
@@ -106,11 +109,13 @@ class AttnMatmulINT8 {
                                 quant_max_bound,
                                 quant_min_bound,
                                 dev_ctx_.stream());
+    PrintMatrix(input_tmp->data<int8_t>(),  input->numel(), "inference_" + name + "_input_" + std::to_string(layer) + "_int8");
 
     helpers_[0]->GEMM(input_tmp->data<int8_t>(),
                       weight->data<int8_t>(),
                       output_tmp->data<int32_t>(),
                       dev_ctx_.stream());
+    PrintMatrix(output_tmp->data<int32_t>(),  output->numel(), "inference_" + name + "_output_" + std::to_string(layer) + "_int32");
 
     dequantize_kernel_launcher<T>(output_tmp->data<int32_t>(),
                                   output->data<T>(),
@@ -120,6 +125,7 @@ class AttnMatmulINT8 {
                                   quant_in_scale,
                                   dequant_out_scale->data<float>(),
                                   quant_out_scale_offset);
+    PrintMatrix(output->data<T>(),  output->numel(), "inference_" + name + "_output_" + std::to_string(layer) + "_float");
 
     if (compute_bias_) {
       // bias_out = output + bias
@@ -165,7 +171,7 @@ class AttnMatmulINT8 {
                       output_tmp->data<int32_t>(),
                       dev_ctx_.stream());
     
-    PrintMatrix(output_tmp->data<int32_t>(),  output->numel(), "infer_qkv_out_" + std::to_string(layer) + "_int8", layer, is_encoder);
+    // PrintMatrix(output_tmp->data<int32_t>(),  output->numel(), "infer_qkv_out_" + std::to_string(layer) + "_int8", layer, is_encoder);
 
     dequantize_kernel_launcher<T>(output_tmp->data<int32_t>(),
                                   output->data<T>(),
@@ -175,7 +181,7 @@ class AttnMatmulINT8 {
                                   quant_in_scale,
                                   dequant_out_scale->data<float>(),
                                   quant_out_scale_offset);
-    PrintMatrix(output->data<T>(), output->numel(), "infer_qkv_out_" + std::to_string(layer) + "_float", layer, is_encoder);
+    // PrintMatrix(output->data<T>(), output->numel(), "infer_qkv_out_" + std::to_string(layer) + "_float", layer, is_encoder);
 
     if (compute_bias_) {
       // bias_out = output + bias
@@ -214,12 +220,12 @@ class AttnMatmulINT8 {
                                 quant_min_bound,
                                 dev_ctx_.stream());
 
-    PrintMatrix(input_tmp->data<int8_t>(),  input->numel(), "infer_out_linear_in_" + std::to_string(layer) + "_int", layer, is_encoder);
+    // PrintMatrix(input_tmp->data<int8_t>(),  input->numel(), "infer_out_linear_in_" + std::to_string(layer) + "_int", layer, is_encoder);
     helpers_[0]->GEMM(input_tmp->data<int8_t>(),
                       weight->data<int8_t>(),
                       output->data<int32_t>(),
                       dev_ctx_.stream());
-    PrintMatrix(output->data<int32_t>(),  input->numel(), "infer_out_linear_out_" + std::to_string(layer) + "_int", layer, is_encoder);
+    // PrintMatrix(output->data<int32_t>(),  input->numel(), "infer_out_linear_out_" + std::to_string(layer) + "_int", layer, is_encoder);
   }
 
  private:
