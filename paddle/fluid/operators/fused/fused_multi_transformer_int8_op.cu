@@ -177,6 +177,11 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     AttnMatmulINT8<T> out_linear_compute(
         dev_ctx, bsz_seq, dim_embed, hidden_size, false);
 
+    Tensor out_linear_bias_out;
+    out_linear_bias_out.Resize({{bsz, seq_len, dim_embed}});
+    dev_ctx.Alloc<T>(
+        &out_linear_bias_out, out_linear_bias_out.numel() * sizeof(T));
+
     // 5. ln(residual + bias)
     DropoutParam dropout_param2(true, 0, true, true, 0.0, nullptr, 0);
     // FusedDropoutLayerNormHelper<T, uint8_t, int32_t, int8_t>
@@ -527,6 +532,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
       VLOG(0) << "step4";
 #endif
 
+      int elewise_add_axis = -1;
       // step5. ln(residual + dropout(input + bias))
       if (pre_layer_norm) {
         auto *ln_scale_data = ffn_ln_scales[i]->data<U>();
@@ -555,18 +561,48 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
         //     quant_max_bound,
         //     quant_min_bound);
         // inplace
-        fused_dropout_layernorm_helper.LayernormResidualDropoutBias(
+        // fused_dropout_layernorm_helper.LayernormResidualDropoutBias(
+        //     dev_ctx,
+        //     buf1->data<T>(),
+        //     x_data,
+        //     out_linear_bias_data,
+        //     ln_scale_data,
+        //     ln_bias_data,
+        //     bias_dropout_residual_out_data,
+        //     dropout_mask_out_data,
+        //     buf1->data<T>(),
+        //     ln_mean_data,
+        //     ln_var_data);
+
+       // add bias
+          std::vector<const Tensor*> out_linear_bias_ins;
+          std::vector<Tensor*> out_linear_bias_outs;
+          out_linear_bias_ins.emplace_back(buf1);
+          out_linear_bias_ins.emplace_back(out_linear_biases[i]);
+          out_linear_bias_outs.emplace_back(&out_linear_bias_out);
+          phi::funcs::BroadcastKernel<phi::ElementwiseType::kBinary, T, T>(
             dev_ctx,
-            buf1->data<T>(),
-            x_data,
-            out_linear_bias_data,
-            ln_scale_data,
-            ln_bias_data,
-            bias_dropout_residual_out_data,
-            dropout_mask_out_data,
-            buf1->data<T>(),
-            ln_mean_data,
-            ln_var_data);
+            out_linear_bias_ins,
+            &out_linear_bias_outs,
+            elewise_add_axis,
+            phi::funcs::AddFunctor<T>());
+          const Tensor* residual = (i == 0 ? input_x : buf0);
+          // add residual
+          std::vector<const Tensor*> out_linear_residual_ins;
+          std::vector<Tensor*> out_linear_residual_outs;
+          out_linear_residual_ins.emplace_back(&out_linear_bias_out);
+          out_linear_residual_ins.emplace_back(residual);
+          out_linear_residual_outs.emplace_back(&bias_dropout_residual_out);
+
+          phi::funcs::BroadcastKernel<phi::ElementwiseType::kBinary, T, T>(
+              dev_ctx,
+              out_linear_residual_ins,
+              &out_linear_residual_outs,
+              elewise_add_axis,
+              phi::funcs::AddFunctor<T>());
+            
+          // layernorm
+          phi::LayerNormKernel<T>(dev_ctx, bias_dropout_residual_out, *ffn_ln_scales[i], *ffn_ln_biases[i], epsilon, 2, true, buf1, &ln_mean, &ln_var);
       } else {
         auto *ln_scale_data = ln_scales[i]->data<U>();
         auto *ln_bias_data = ln_biases[i]->data<U>();
@@ -663,7 +699,6 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
         ffn1_bias_ins.emplace_back(&ffn1_out);
         ffn1_bias_ins.emplace_back(ffn1_biases[i]);
         ffn1_bias_outs.emplace_back(&ffn1_bias_out);
-        int elewise_add_axis = -1;
         phi::funcs::BroadcastKernel<phi::ElementwiseType::kBinary, T, T>(
             dev_ctx,
             ffn1_bias_ins,
@@ -785,7 +820,6 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
           ffn2_bias_ins.emplace_back(buf1);
           ffn2_bias_ins.emplace_back(ffn2_biases[i]);
           ffn2_bias_outs.emplace_back(&ffn2_bias_out);
-          int elewise_add_axis = -1;
           phi::funcs::BroadcastKernel<phi::ElementwiseType::kBinary, T, T>(
             dev_ctx,
             ffn2_bias_ins,
@@ -835,7 +869,6 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
           ffn2_bias_ins.emplace_back(buf1);
           ffn2_bias_ins.emplace_back(ffn2_biases[i]);
           ffn2_bias_outs.emplace_back(&ffn2_bias_out);
-          int elewise_add_axis = -1;
           phi::funcs::BroadcastKernel<phi::ElementwiseType::kBinary, T, T>(
             dev_ctx,
             ffn2_bias_ins,
