@@ -821,18 +821,42 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
           //     ffn2_out_scale->data<float>(),
           //     i * ffn2_out_scale_n,
           //     1.0);
-          ffn2_fused_dropout_helper.ResidualDropoutBias(
-              dev_ctx,
-              buf1->data<T>(),
-              bias_dropout_residual_out_data,
-              ffn2_biases[i]->data<T>(),
-              buf1->data<T>(),
-              dropout_mask_out_data);
+          // ffn2_fused_dropout_helper.ResidualDropoutBias(
+          //     dev_ctx,
+          //     buf1->data<T>(),
+          //     bias_dropout_residual_out_data,
+          //     ffn2_biases[i]->data<T>(),
+          //     buf1->data<T>(),
+          //     dropout_mask_out_data);
           // add bias
 
-          // residual
+          std::vector<const Tensor*> ffn2_bias_ins;
+          std::vector<Tensor*> ffn2_bias_outs;
+          ffn2_bias_ins.emplace_back(buf1);
+          ffn2_bias_ins.emplace_back(ffn2_biases[i]);
+          ffn2_bias_outs.emplace_back(&ffn2_bias_out);
+          int elewise_add_axis = -1;
+          phi::funcs::BroadcastKernel<phi::ElementwiseType::kBinary, T, T>(
+            dev_ctx,
+            ffn2_bias_ins,
+            &ffn2_bias_outs,
+            elewise_add_axis,
+            phi::funcs::AddFunctor<T>());
 
-          
+          // add residual
+          std::vector<const Tensor*> ffn2_residual_ins;
+          std::vector<Tensor*> ffn2_residual_outs;
+          ffn2_residual_ins.emplace_back(&ffn2_bias_out);
+          ffn2_residual_ins.emplace_back(&bias_dropout_residual_out);
+          ffn2_residual_outs.emplace_back(buf1);
+
+          phi::funcs::BroadcastKernel<phi::ElementwiseType::kBinary, T, T>(
+              dev_ctx,
+              ffn2_residual_ins,
+              &ffn2_residual_outs,
+              elewise_add_axis,
+              phi::funcs::AddFunctor<T>());
+
         }
       } else {
         auto *ln_scale_data = ffn_ln_scales[i]->data<U>();
