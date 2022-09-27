@@ -16,6 +16,8 @@ limitations under the License. */
 #include "paddle/fluid/operators/fused/fused_multi_transformer_op.h"
 
 #include "paddle/phi/kernels/gelu_kernel.h"
+#include "paddle/phi/kernels/layer_norm_kernel.h"
+#include "paddle/fluid/operators/layer_norm_kernel.cu.h"
 
 namespace paddle {
 namespace operators {
@@ -252,10 +254,10 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
             dev_ctx, bsz_seq, dim_embed, ffn2_dropout_param, epsilon);
 
     Tensor ffn2_bias_out, ffn2_residual_out;
-    ffn2_bias_out.Resize({{bsz_seq, dim_embed}});
+    ffn2_bias_out.Resize({{bsz, seq_len, dim_embed}});
     dev_ctx.Alloc<T>(
         &ffn2_bias_out, ffn2_bias_out.numel() * sizeof(T));
-    ffn2_residual_out.Resize({{bsz_seq, dim_embed}});
+    ffn2_residual_out.Resize({{bsz, seq_len, dim_embed}});
     dev_ctx.Alloc<T>(
         &ffn2_residual_out, ffn2_residual_out.numel() * sizeof(T));
 
@@ -764,47 +766,49 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
           //     quant_round_type,
           //     quant_max_bound,
           //     quant_min_bound);
-          ffn2_fused_dropout_helper.LayernormResidualDropoutBias(
-              dev_ctx,
-              buf1->data<T>(),
-              bias_dropout_residual_out_data,
-              ffn2_biases[i]->data<T>(),
-              ln_scale_data,
-              ln_bias_data,
-              buf1->data<T>(),
-              dropout_mask_out_data,
-              buf0->data<T>(),
-              ln_mean_data,
-              ln_var_data);
+          // ffn2_fused_dropout_helper.LayernormResidualDropoutBias(
+          //     dev_ctx,
+          //     buf1->data<T>(),
+          //     bias_dropout_residual_out_data,
+          //     ffn2_biases[i]->data<T>(),
+          //     ln_scale_data,
+          //     ln_bias_data,
+          //     buf1->data<T>(),
+          //     dropout_mask_out_data,
+          //     buf0->data<T>(),
+          //     ln_mean_data,
+          //     ln_var_data);
 
           // add bias
-          // std::vector<const Tensor*> ffn2_bias_ins;
-          // std::vector<Tensor*> ffn2_bias_outs;
-          // ffn2_bias_ins.emplace_back(buf1);
-          // ffn2_bias_ins.emplace_back(ffn2_biases[i]);
-          // ffn2_bias_outs.emplace_back(&ffn2_bias_out);
-          // int elewise_add_axis = -1;
-          // phi::funcs::BroadcastKernel<phi::ElementwiseType::kBinary, T, T>(
-          //   dev_ctx,
-          //   ffn2_bias_ins,
-          //   &ffn2_bias_outs,
-          //   elewise_add_axis,
-          //   phi::funcs::AddFunctor<T>());
+          std::vector<const Tensor*> ffn2_bias_ins;
+          std::vector<Tensor*> ffn2_bias_outs;
+          ffn2_bias_ins.emplace_back(buf1);
+          ffn2_bias_ins.emplace_back(ffn2_biases[i]);
+          ffn2_bias_outs.emplace_back(&ffn2_bias_out);
+          int elewise_add_axis = -1;
+          phi::funcs::BroadcastKernel<phi::ElementwiseType::kBinary, T, T>(
+            dev_ctx,
+            ffn2_bias_ins,
+            &ffn2_bias_outs,
+            elewise_add_axis,
+            phi::funcs::AddFunctor<T>());
 
-          // // add residual
-          // std::vector<const Tensor*> ffn2_residual_ins;
-          // std::vector<Tensor*> ffn2_residual_outs;
-          // ffn2_residual_ins.emplace_back(&ffn2_bias_out);
-          // ffn2_residual_ins.emplace_back(&bias_dropout_residual_out);
-          // ffn2_residual_outs.emplace_back(&ffn2_residual_out);
-          // int elewise_add_axis = -1;
-          // phi::funcs::BroadcastKernel<phi::ElementwiseType::kBinary, T, T>(
-          //     dev_ctx_,
-          //     ffn2_residual_ins,
-          //     &ffn2_residual_outs,
-          //     elewise_add_axis,
-          //     phi::funcs::AddFunctor<T>());
+          // add residual
+          std::vector<const Tensor*> ffn2_residual_ins;
+          std::vector<Tensor*> ffn2_residual_outs;
+          ffn2_residual_ins.emplace_back(&ffn2_bias_out);
+          ffn2_residual_ins.emplace_back(&bias_dropout_residual_out);
+          ffn2_residual_outs.emplace_back(buf1);
+
+          phi::funcs::BroadcastKernel<phi::ElementwiseType::kBinary, T, T>(
+              dev_ctx,
+              ffn2_residual_ins,
+              &ffn2_residual_outs,
+              elewise_add_axis,
+              phi::funcs::AddFunctor<T>());
+            
           // layernorm
+          phi::LayerNormKernel<T>(dev_ctx, *buf1, *ln_scales[i + 1], *ln_biases[i + 1], epsilon, 2, true, buf0, &ln_mean, &ln_var);
         } else {
           // ffn2_fused_dropout_dequant_helper.ResidualDropoutBias(
           //     dev_ctx,
@@ -824,6 +828,11 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
               ffn2_biases[i]->data<T>(),
               buf1->data<T>(),
               dropout_mask_out_data);
+          // add bias
+
+          // residual
+
+          
         }
       } else {
         auto *ln_scale_data = ffn_ln_scales[i]->data<U>();
