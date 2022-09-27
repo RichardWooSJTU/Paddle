@@ -15,6 +15,8 @@ limitations under the License. */
 #include "paddle/fluid/operators/fused/attn_gemm_int8.h"
 #include "paddle/fluid/operators/fused/fused_multi_transformer_op.h"
 
+#include "paddle/phi/kernels/gelu_kernel.h"
+
 namespace paddle {
 namespace operators {
 
@@ -218,13 +220,16 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
         dev_ctx, bsz_seq, dim_ffn, ffn1_dropout_param);
     FusedDropoutHelper<T, uint8_t> fused_act_dropout_helper_for_post_layernorm(
         dev_ctx, bsz_seq, dim_ffn, ffn1_dropout_param);
-    Tensor ffn1_dropout_out, ffn1_dropout_mask;
+    Tensor ffn1_dropout_out, ffn1_dropout_mask, ffn1_bias_out;
     ffn1_dropout_out.Resize({{bsz_seq, dim_ffn}});
     auto *ffn1_dropout_out_data = dev_ctx.Alloc<T>(
         &ffn1_dropout_out, ffn1_dropout_out.numel() * sizeof(T));
     ffn1_dropout_mask.Resize({{bsz_seq, dim_ffn}});
     auto *ffn1_dropout_mask_data = dev_ctx.Alloc<uint8_t>(
         &ffn1_dropout_mask, ffn1_dropout_mask.numel() * sizeof(uint8_t));
+    ffn1_bias_out.Resize({{bsz_seq, dim_ffn}});
+    dev_ctx.Alloc<T>(
+        &ffn1_bias_out, ffn1_bias_out.numel() * sizeof(T));
 
     // 8. ffn2 matmul
     auto ffn2_weights = ctx.MultiInput<Tensor>("FFN2Weight");
@@ -245,6 +250,14 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     FusedDropoutLayerNormHelper<T, uint8_t>
         ffn2_fused_dropout_helper_for_post_layernorm(
             dev_ctx, bsz_seq, dim_embed, ffn2_dropout_param, epsilon);
+
+    Tensor ffn2_bias_out, ffn2_residual_out;
+    ffn2_bias_out.Resize({{bsz_seq, dim_embed}});
+    dev_ctx.Alloc<T>(
+        &ffn2_bias_out, ffn2_bias_out.numel() * sizeof(T));
+    ffn2_residual_out.Resize({{bsz_seq, dim_embed}});
+    dev_ctx.Alloc<T>(
+        &ffn2_residual_out, ffn2_residual_out.numel() * sizeof(T));
 
     // []. init workspace for cublasLt transform
     Tensor input_workspace, output_workspace;
@@ -636,12 +649,28 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
         //     quant_round_type,
         //     quant_max_bound,
         //     quant_min_bound);
-        fused_act_dropout_helper.DropoutActBias(dev_ctx,
-                                              ffn1_out_data,
-                                              ffn1_biases[i]->data<T>(),
-                                              "gelu",
-                                              ffn1_dropout_out_data,
-                                              ffn1_dropout_mask_data);
+        // fused_act_dropout_helper.DropoutActBias(dev_ctx,
+        //                                       ffn1_out_data,
+        //                                       ffn1_biases[i]->data<T>(),
+        //                                       "gelu",
+        //                                       ffn1_dropout_out_data,
+        //                                       ffn1_dropout_mask_data);
+        // add bias
+        std::vector<const Tensor*> ffn1_bias_ins;
+        std::vector<Tensor*> ffn1_bias_outs;
+        ffn1_bias_ins.emplace_back(&ffn1_out);
+        ffn1_bias_ins.emplace_back(ffn1_biases[i]);
+        ffn1_bias_outs.emplace_back(&ffn1_bias_out);
+        int elewise_add_axis = -1;
+        phi::funcs::BroadcastKernel<phi::ElementwiseType::kBinary, T, T>(
+            dev_ctx,
+            ffn1_bias_ins,
+            &ffn1_bias_outs,
+            elewise_add_axis,
+            phi::funcs::AddFunctor<T>());
+
+        // activate
+        phi::GeluKernel<T>(dev_ctx, ffn1_bias_out, false, &ffn1_dropout_out);
       } else {
         fused_act_dropout_helper_for_post_layernorm.DropoutActBias(
             dev_ctx,
@@ -747,6 +776,35 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
               buf0->data<T>(),
               ln_mean_data,
               ln_var_data);
+
+          // add bias
+          // std::vector<const Tensor*> ffn2_bias_ins;
+          // std::vector<Tensor*> ffn2_bias_outs;
+          // ffn2_bias_ins.emplace_back(buf1);
+          // ffn2_bias_ins.emplace_back(ffn2_biases[i]);
+          // ffn2_bias_outs.emplace_back(&ffn2_bias_out);
+          // int elewise_add_axis = -1;
+          // phi::funcs::BroadcastKernel<phi::ElementwiseType::kBinary, T, T>(
+          //   dev_ctx,
+          //   ffn2_bias_ins,
+          //   &ffn2_bias_outs,
+          //   elewise_add_axis,
+          //   phi::funcs::AddFunctor<T>());
+
+          // // add residual
+          // std::vector<const Tensor*> ffn2_residual_ins;
+          // std::vector<Tensor*> ffn2_residual_outs;
+          // ffn2_residual_ins.emplace_back(&ffn2_bias_out);
+          // ffn2_residual_ins.emplace_back(&bias_dropout_residual_out);
+          // ffn2_residual_outs.emplace_back(&ffn2_residual_out);
+          // int elewise_add_axis = -1;
+          // phi::funcs::BroadcastKernel<phi::ElementwiseType::kBinary, T, T>(
+          //     dev_ctx_,
+          //     ffn2_residual_ins,
+          //     &ffn2_residual_outs,
+          //     elewise_add_axis,
+          //     phi::funcs::AddFunctor<T>());
+          // layernorm
         } else {
           // ffn2_fused_dropout_dequant_helper.ResidualDropoutBias(
           //     dev_ctx,
