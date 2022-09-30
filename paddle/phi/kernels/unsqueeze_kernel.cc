@@ -18,6 +18,7 @@
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/tensor_utils.h"
 #include "paddle/phi/kernels/funcs/unsqueeze.h"
+#include "paddle/fluid/framework/tensor_util.h"
 
 namespace phi {
 template <typename T, typename Context>
@@ -26,6 +27,10 @@ void UnsqueezeKernel(const Context& dev_ctx,
                      const IntArray& axes,
                      DenseTensor* out) {
   auto x_dims = x.dims();
+  // if (x_dims.size() == 3 && x_dims[1] == 1 && x_dims[2] >= 511) {
+  //   VLOG(0) << "=========unsqueeze-x=======";
+  //   VLOG(0) << x;
+  // }
   auto out_dims = out->dims();
   if (axes.FromTensor()) {
     std::vector<int32_t> tmp;
@@ -39,6 +44,11 @@ void UnsqueezeKernel(const Context& dev_ctx,
   dev_ctx.template Alloc<T>(out);
   phi::Copy(dev_ctx, x, dev_ctx.GetPlace(), false, out);
   out->Resize(out_dims);  // copy will reset the dims.
+  VLOG(0) << out_dims;
+  // if (x_dims.size() == 4 && x_dims[2] == 1 && x_dims[3] >= 511) {
+  //   VLOG(0) << "=========unsqueeze-out=======";
+  //   VLOG(0) << *out;
+  // }
 }
 
 template <typename T, typename Context>

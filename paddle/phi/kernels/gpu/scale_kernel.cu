@@ -18,6 +18,7 @@ limitations under the License. */
 #include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/funcs/elementwise_base.h"
+#include "paddle/fluid/framework/tensor_util.h"
 
 namespace phi {
 
@@ -48,8 +49,12 @@ void ScaleKernel(const Context& dev_ctx,
                  float bias,
                  bool bias_after_scale,
                  DenseTensor* out) {
-  
+  auto x_dims = x.dims();
   // PADDLE_ENFORCE_GPU_SUCCESS(cudaGetLastError());
+  //  if (x_dims.size() == 3 && x_dims[1] == 1 && x_dims[2] >= 511) {
+  //   VLOG(0) << "=========scale-x=======";
+  //   VLOG(0) << x;
+  // }
   std::vector<const DenseTensor*> inputs;
   std::vector<DenseTensor*> outputs;
   inputs.emplace_back(&x);
@@ -60,7 +65,10 @@ void ScaleKernel(const Context& dev_ctx,
       inputs,
       &outputs,
       ScaleFunctor<T>(scale.to<T>(), static_cast<T>(bias), bias_after_scale));
-  
+  // if (x_dims.size() == 3 && x_dims[1] == 1 && x_dims[2] >= 511) {
+  //   VLOG(0) << "=========scale-out=======";
+  //   VLOG(0) << *out;
+  // }
   // PADDLE_ENFORCE_GPU_SUCCESS(cudaGetLastError());
 }
 

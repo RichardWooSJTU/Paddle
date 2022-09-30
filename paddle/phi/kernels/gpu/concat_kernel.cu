@@ -27,11 +27,29 @@
 
 namespace phi {
 
+static int concat_time = 0;
+
+template <typename T>
+__global__ void print_kernel(const T* x, int num) {
+  for (int i = 0; i < num; ++i) {
+    printf("%f\n", x[i]);
+  }
+}
+
 template <typename T, typename Context>
 void ConcatKernel(const Context& dev_ctx,
                   const std::vector<const DenseTensor*>& x,
                   const Scalar& axis_scalar,
                   DenseTensor* out) {
+  // VLOG(0) << "===========X0=============";
+  // cudaDeviceSynchronize();
+  // print_kernel<<<1,1>>>(x[0]->data<T>(), x[0]->numel());
+  // cudaDeviceSynchronize();
+  // VLOG(0) << "===========X1=============";
+  // cudaDeviceSynchronize();
+  // print_kernel<<<1,1>>>(x[1]->data<T>(), x[1]->numel());
+  // cudaDeviceSynchronize();
+
   int64_t axis = axis_scalar.to<int64_t>();
 
   axis = phi::funcs::ComputeAxis(axis, x[0]->dims().size());
@@ -106,6 +124,10 @@ void ConcatKernel(const Context& dev_ctx,
     }
     phi::funcs::ConcatFunctor<Context, T> functor;
     functor(dev_ctx, inputs, axis, out);
+    // VLOG(0) << "===========out=============";
+    // cudaDeviceSynchronize();
+    // print_kernel<<<1,1>>>(out->data<T>(), out->numel());
+    // cudaDeviceSynchronize();
   }
 }
 

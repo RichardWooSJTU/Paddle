@@ -26,9 +26,9 @@ limitations under the License. */
 namespace paddle {
 namespace operators {
 
-// #define DEBUG_PRINT
+#define DEBUG_PRINT
 const std::unordered_set<int> debug_layers{0,1,2,3,4,5};
-const std::unordered_set<int> debug_steps{1};
+const std::unordered_set<int> debug_steps{0, 1};
 static int step = 0;
 static int layer = 0;
 
@@ -54,7 +54,7 @@ static void PrintMatrix(const T* mat_d, int num, std::string name) {
         ss << static_cast<int>(tmp[i]) << std::endl;
         // sum_i8 += static_cast<int>(tmp[i*n+j]);
       } else {
-        ss << tmp[i] << std::endl;
+        ss << std::setprecision(8) << tmp[i] << std::endl;
         // sum += tmp[i*n+j];
       }
     }

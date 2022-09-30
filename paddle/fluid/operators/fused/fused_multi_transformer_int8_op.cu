@@ -97,7 +97,9 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     int output_size = 3 * hidden_size;
     int input_size = dim_embed;
 
-    bool compute_bias = qkv_biases.size() > 0 && time_step == nullptr;
+    // bool compute_bias = qkv_biases.size() > 0 && time_step == nullptr;
+
+    bool compute_bias = qkv_biases.size() > 0;
     // (transA, transB, compute_bias) = (false, trans_qkvw, false)
     AttnMatmulINT8<T> qkv_compute(
         dev_ctx, bsz_seq, output_size, input_size, compute_bias);
@@ -112,10 +114,11 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     auto fmha_compute =
         FMHARef<T>(dev_ctx, bsz, seq_len, num_head, dim_head, attn_param);
     auto *src_mask = ctx.Input<Tensor>("SrcMask");
+    PrintMatrix(src_mask->data<float>(), src_mask->numel(), "src_mask");
     auto cache_kvs = ctx.MultiInput<Tensor>("CacheKV");
     auto cache_kv_outs = ctx.MultiOutput<Tensor>("CacheKVOut");
     // auto *time_step = ctx.Input<Tensor>("TimeStep");
-
+    int time_step_value = 0;
     auto out_seq_len = seq_len;
     if (time_step) {
       PADDLE_ENFORCE_EQ(time_step->place(),
@@ -123,7 +126,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
                         platform::errors::PreconditionNotMet(
                             "The place of input(TimeStep) must be CPUPlace."));
       // cache_seq_len
-      int time_step_value = time_step->data<int>()[0];
+      time_step_value = time_step->data<int>()[0];
       step++;
       PADDLE_ENFORCE_GT(time_step_value,
                         0,
@@ -344,7 +347,8 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
       // step2. qkv
       const Tensor *qkv_bias = qkv_biases.size() > 0 ? qkv_biases[i] : nullptr;
       // NOTE: in decoder stage, bias is fused in fmha
-      const Tensor *bias = time_step ? nullptr : qkv_bias;
+      // const Tensor *bias = time_step ? nullptr : qkv_bias;
+      const Tensor *bias = qkv_bias;
       if (!pre_layer_norm && i == 0) {
         qkv_compute.ComputeForward(qkv_weights[i],
                                    input_x,
@@ -408,19 +412,46 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 
       if (time_step) {  // generation decoder stage
         // [2, batch_size, num_head, max_seq_len, head_size]
-        int max_seq_len = cache_kv->dims()[3];
-        fmha<T>(dev_ctx,
-                qkv_out,
-                *qkv_bias,
-                *src_mask,
-                cache_kv_out,
-                &fmha_out,
-                bsz,
-                max_seq_len,
-                num_head,
-                dim_head,
-                time_step->data<int>()[0],
-                1. / sqrt(dim_head));
+        // int max_seq_len = cache_kv->dims()[3];
+        // fmha<T>(dev_ctx,
+        //         qkv_out,
+        //         *qkv_bias,
+        //         *src_mask,
+        //         cache_kv_out,
+        //         &fmha_out,
+        //         bsz,
+        //         max_seq_len,
+        //         num_head,
+        //         dim_head,
+        //         time_step->data<int>()[0],
+        //         1. / sqrt(dim_head));
+        T *cache_kv_data = cache_kv_out->data<T>();
+
+        Tensor cache_kv_in_tensor, cache_kv_out_tensor;
+        cache_kv_in_tensor.Resize({{2, bsz, num_head, time_step_value, dim_head}});
+        dev_ctx.Alloc<T>(
+          &cache_kv_in_tensor, cache_kv_in_tensor.numel() * sizeof(T));
+        cache_kv_out_tensor.Resize({{2, bsz, num_head, out_seq_len, dim_head}});
+        dev_ctx.Alloc<T>(
+          &cache_kv_out_tensor, cache_kv_out_tensor.numel() * sizeof(T));
+
+        cudaMemcpy(cache_kv_in_tensor.data<T>(), cache_kv_data, cache_kv_in_tensor.numel() * sizeof(T), cudaMemcpyDeviceToDevice);
+        fmha_compute.ComputeForward(qkv_out,
+                                    &cache_kv_in_tensor,
+                                    src_mask,
+                                    &transpose_out_2,
+                                    &cache_kv_out_tensor,
+                                    &qk_out,
+                                    &src_mask_out, //debug
+                                    &softmax_out,
+                                    &attn_dropout_mask_out,
+                                    &attn_dropout_out,
+                                    &qktv_out,
+                                    &fmha_out);
+        cudaMemcpy(cache_kv_data, cache_kv_out_tensor.data<T>(), cache_kv_out_tensor.numel() * sizeof(T), cudaMemcpyDeviceToDevice); 
+        PrintMatrix(src_mask_out.data<T>(), src_mask_out.numel(), "inference_softmax_input_" + std::to_string(i) + "_float");
+        PrintMatrix(softmax_out.data<T>(), softmax_out.numel(), "inference_softmax_output_" + std::to_string(i) + "_float");
+
       } else if (cache_kv_out) {  // generation context stage
         // TODO(wangxi): can remove dropout in inference
         fmha_compute.ComputeForward(qkv_out,
@@ -448,21 +479,22 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 
         VLOG(1) << "cache_kv_out" <<cache_kv_out->dtype();
         T *cache_kv_data = cache_kv_out->data<T>();
-        int64_t cache_k_size = bsz * num_head * max_seq_len * dim_head;
+        cudaMemcpy(cache_kv_data, k_ptr, 2 * sizeof(T) * k_size, cudaMemcpyDeviceToDevice);
+        // int64_t cache_k_size = bsz * num_head * max_seq_len * dim_head;
 
-        T *cache_k_ptr = cache_kv_data;
-        T *cache_v_ptr = cache_kv_data + cache_k_size;
+        // T *cache_k_ptr = cache_kv_data;
+        // T *cache_v_ptr = cache_kv_data + cache_k_size;
 
-        write_cache_kv<T>(dev_ctx,
-                          cache_k_ptr,
-                          cache_v_ptr,
-                          k_ptr,
-                          v_ptr,
-                          bsz,
-                          num_head,
-                          seq_len,
-                          max_seq_len,
-                          dim_head);
+        // write_cache_kv<T>(dev_ctx,
+        //                   cache_k_ptr,
+        //                   cache_v_ptr,
+        //                   k_ptr,
+        //                   v_ptr,
+        //                   bsz,
+        //                   num_head,
+        //                   seq_len,
+        //                   max_seq_len,
+        //                   dim_head);
       } else {  // not generation
         // TODO(wangxi): can remove dropout in inference
         fmha_compute.ComputeForward(qkv_out,
