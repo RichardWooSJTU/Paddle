@@ -110,11 +110,24 @@ class FMHARef {
     auto out_seq_len = seq_len_;
     if (cache_kv_tensor) {
       // kv [2, bs, num_head, seq_len, head_dim]
-      auto kv_tensor = transpose_2_out_tensor->Slice(1, 3);
+      // auto kv_tensor = transpose_2_out_tensor->Slice(1, 3);
+      VLOG(0) << "transpose_2_out_tensor" << transpose_2_out_tensor->dims();
+      auto qkv_tensor = transpose_2_out_tensor->Slice(0, 3);
       phi::funcs::ConcatFunctor<phi::GPUContext, T> concat;
       // out [2, bs, num_head, cache_seq_len + seq_len, head_dim]
-      concat(dev_ctx_, {*cache_kv_tensor, kv_tensor}, 3, cache_kv_out_tensor);
+      concat(dev_ctx_, {*cache_kv_tensor, qkv_tensor}, 3, cache_kv_out_tensor);
       out_seq_len = cache_kv_out_tensor->dims()[3];
+      seq_len_ = out_seq_len;
+    }
+
+
+    framework::Tensor tmp_cache_qkv;
+    if (cache_kv_tensor) {
+      tmp_cache_qkv.Resize(cache_kv_out_tensor->dims());
+      dev_ctx_.Alloc<T>(
+        &tmp_cache_qkv, tmp_cache_qkv.numel() * sizeof(T));
+      framework::TensorCopySync(
+          *cache_kv_out_tensor, dev_ctx_.GetPlace(), &tmp_cache_qkv);
     }
 
     int64_t q_size = batch_size_ * seq_len_ * num_head_ * head_dim_;
@@ -123,8 +136,10 @@ class FMHARef {
     T* v_ptr = nullptr;
 
     if (cache_kv_tensor) {
-      int64_t k_size = cache_kv_out_tensor->numel() / 2;
-      k_ptr = cache_kv_out_tensor->data<T>();
+      VLOG(0) << "cache_kv_out_tensor" << cache_kv_out_tensor->dims();
+      int64_t k_size = cache_kv_out_tensor->numel() / 3;
+      q_ptr = tmp_cache_qkv.data<T>();
+      k_ptr = q_ptr + k_size;
       v_ptr = k_ptr + k_size;
     } else {
       int64_t k_size = q_size;
@@ -132,11 +147,16 @@ class FMHARef {
       v_ptr = k_ptr + k_size;
     }
 
+
     {
       // NOTE(wangxi): We scale Q with 1/sqrt(Dh) before QK^T, because for
       // float16 calculation, INF may appear in QK^T if we do not scale before.
       float alpha = 1.0 / sqrt(head_dim_);
       auto q_tensor = transpose_2_out_tensor->Slice(0, 1);
+      if (cache_kv_tensor) {
+        q_tensor = tmp_cache_qkv.Slice(0, 1);
+      }
+      VLOG(0) << "q_tensor " << q_tensor.dims();
       auto functor = phi::funcs::ScaleFunctor<T>(alpha);
       std::vector<const framework::Tensor*> ins = {&q_tensor};
       std::vector<framework::Tensor*> outs = {&q_tensor};
@@ -254,8 +274,28 @@ class FMHARef {
     // transpose: [0, 2, 1, 3]
     // output shape: [batch_size, seq_len, num_heads, head_dim]
     std::vector<int> perm_3 = {0, 2, 1, 3};
-    TransposeGPUKernelDriver<T>(
+
+    if (cache_kv_tensor) {
+      framework::Tensor fmha_out_tmp;
+      auto out_dims = fmha_out_tensor->dims();
+      out_dims[1] = seq_len_;
+      fmha_out_tmp.Resize(out_dims);
+      dev_ctx_.Alloc<T>(
+        &fmha_out_tmp, fmha_out_tmp.numel() * sizeof(T));
+
+      TransposeGPUKernelDriver<T>(
+          dev_ctx_, *qktv_out_tensor, perm_3, &fmha_out_tmp);
+      
+      VLOG(0) << "fmha_out_tmp" << fmha_out_tmp.dims();
+      cudaMemcpy(fmha_out_tensor->data<T>(), 
+                fmha_out_tmp.data<T>() + (seq_len_ - 1) * out_dims[2] * out_dims[3] * sizeof(T), 
+                out_dims[2] * out_dims[3] * sizeof(T), cudaMemcpyDeviceToDevice);
+      VLOG(0) << "fmha_out_tensor" << fmha_out_tensor->dims();
+    } else {
+      TransposeGPUKernelDriver<T>(
         dev_ctx_, *qktv_out_tensor, perm_3, fmha_out_tensor);
+    }
+
   }
 
   void ComputeBackward(const Tensor& transpose_2_out_tensor,

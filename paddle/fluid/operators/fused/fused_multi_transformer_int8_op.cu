@@ -146,26 +146,26 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     transpose_out_2.Resize({{3, bsz, num_head, seq_len, dim_head}});
     auto *transpose_out_2_data =
         dev_ctx.Alloc<T>(&transpose_out_2, transpose_out_2.numel() * sizeof(T));
-    qk_out.Resize({{bsz, num_head, seq_len, out_seq_len}});
+    qk_out.Resize({{bsz, num_head, out_seq_len, out_seq_len}});
     auto *qk_out_data = dev_ctx.Alloc<T>(&qk_out, qk_out.numel() * sizeof(T));
-    src_mask_out.Resize({{bsz, num_head, seq_len, out_seq_len}});
+    src_mask_out.Resize({{bsz, num_head, out_seq_len, out_seq_len}});
     auto* src_mask_out_data = dev_ctx.Alloc<T>(&src_mask_out, src_mask_out.numel() * sizeof(T));
 
     Tensor softmax_out;
     Tensor attn_dropout_mask_out, attn_dropout_out;
     Tensor qktv_out, fmha_out;
-    softmax_out.Resize({{bsz, num_head, seq_len, out_seq_len}});
+    softmax_out.Resize({{bsz, num_head, out_seq_len, out_seq_len}});
     auto *softmax_out_data =
         dev_ctx.Alloc<T>(&softmax_out, softmax_out.numel() * sizeof(T));
 
-    attn_dropout_mask_out.Resize({{bsz, num_head, seq_len, out_seq_len}});
+    attn_dropout_mask_out.Resize({{bsz, num_head, out_seq_len, out_seq_len}});
     auto *attn_dropout_mask_out_data = dev_ctx.Alloc<T>(
         &attn_dropout_mask_out, attn_dropout_mask_out.numel() * sizeof(T));
-    attn_dropout_out.Resize({{bsz, num_head, seq_len, out_seq_len}});
+    attn_dropout_out.Resize({{bsz, num_head, out_seq_len, out_seq_len}});
     auto *attn_dropout_data_data = dev_ctx.Alloc<T>(
         &attn_dropout_out, attn_dropout_out.numel() * sizeof(T));
 
-    qktv_out.Resize({{bsz, num_head, seq_len, dim_head}});
+    qktv_out.Resize({{bsz, num_head, out_seq_len, dim_head}});
     auto *qktv_out_data =
         dev_ctx.Alloc<T>(&qktv_out, qktv_out.numel() * sizeof(T));
     fmha_out.Resize({{bsz, seq_len, num_head, dim_head}});
@@ -428,10 +428,10 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
         T *cache_kv_data = cache_kv_out->data<T>();
 
         Tensor cache_kv_in_tensor, cache_kv_out_tensor;
-        cache_kv_in_tensor.Resize({{2, bsz, num_head, time_step_value, dim_head}});
+        cache_kv_in_tensor.Resize({{3, bsz, num_head, time_step_value, dim_head}});
         dev_ctx.Alloc<T>(
           &cache_kv_in_tensor, cache_kv_in_tensor.numel() * sizeof(T));
-        cache_kv_out_tensor.Resize({{2, bsz, num_head, out_seq_len, dim_head}});
+        cache_kv_out_tensor.Resize({{3, bsz, num_head, out_seq_len, dim_head}});
         dev_ctx.Alloc<T>(
           &cache_kv_out_tensor, cache_kv_out_tensor.numel() * sizeof(T));
 
@@ -479,7 +479,10 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 
         VLOG(1) << "cache_kv_out" <<cache_kv_out->dtype();
         T *cache_kv_data = cache_kv_out->data<T>();
-        cudaMemcpy(cache_kv_data, k_ptr, 2 * sizeof(T) * k_size, cudaMemcpyDeviceToDevice);
+
+        // cudaMemcpy(cache_kv_data, k_ptr, 2 * sizeof(T) * k_size, cudaMemcpyDeviceToDevice);
+
+        cudaMemcpy(cache_kv_data, q_ptr, 3 * sizeof(T) * k_size, cudaMemcpyDeviceToDevice);
         // int64_t cache_k_size = bsz * num_head * max_seq_len * dim_head;
 
         // T *cache_k_ptr = cache_kv_data;

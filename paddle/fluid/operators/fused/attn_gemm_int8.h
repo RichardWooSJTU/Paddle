@@ -28,7 +28,7 @@ namespace operators {
 
 #define DEBUG_PRINT
 const std::unordered_set<int> debug_layers{0,1,2,3,4,5};
-const std::unordered_set<int> debug_steps{0, 1};
+const std::unordered_set<int> debug_steps{1};
 static int step = 0;
 static int layer = 0;
 
