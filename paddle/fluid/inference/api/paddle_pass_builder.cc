@@ -193,6 +193,11 @@ GpuPassStrategy::GpuPassStrategy() : PassStrategy({}) {
   passes_.assign({
     //   "identity_scale_op_clean_pass",             //
     "is_test_pass",                                       //
+      // "quant_conv2d_dequant_fuse_pass",        //
+      "delete_quant_dequant_op_pass",          //
+      "delete_quant_dequant_filter_op_pass",   //
+      "delete_weight_dequant_linear_op_pass",  //
+      "delete_quant_dequant_linear_op_pass",   //
         "fused_multi_transformer_encoder_pass",           //
         "fused_multi_transformer_decoder_pass",           //
         "fused_multi_transformer_encoder_fuse_qkv_pass",  //

@@ -1223,7 +1223,8 @@ std::ostream& operator<<(std::ostream& os, const phi::DenseTensor& t) {
   }
 
 #define PrintTensorCallback(cpp_type, proto_type)                 \
-  do {                                                            \
+  do {                                \
+    os << "tensor.dtype()= " << tensor.dtype() << "\n";           \
     if (paddle::framework::TransToProtoVarType(tensor.dtype()) == \
         proto_type) {                                             \
       os << "  - dtype: " << proto_type << "\n";                  \

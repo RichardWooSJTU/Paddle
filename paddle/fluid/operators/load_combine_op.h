@@ -77,8 +77,10 @@ class LoadCombineOpKernel : public framework::OpKernel<T> {
     auto &dev_ctx = *pool.Get(place);
     auto out_vars = context.MultiOutputVar("Out");
 
+    VLOG(5) << "out_var_names" << out_var_names.size();
+
     for (size_t i = 0; i < out_var_names.size(); i++) {
-      VLOG(4) << "loading tensor: " << out_var_names[i];
+      VLOG(5) << "loading tensor: " << "i=" << i << ", name=" << out_var_names[i];
       PADDLE_ENFORCE_NOT_NULL(
           out_vars[i],
           platform::errors::InvalidArgument(
@@ -115,6 +117,8 @@ class LoadCombineOpKernel : public framework::OpKernel<T> {
 
         // Get data from fin to tensor
         paddle::framework::DeserializeFromStream(*buffer, tensor, dev_ctx);
+        VLOG(5) << "dtype: " << tensor->dtype();
+        VLOG(5) << "dims: " << tensor->dims();
 
         auto in_dtype = framework::TransToProtoVarType(tensor->dtype());
         auto out_dtype =

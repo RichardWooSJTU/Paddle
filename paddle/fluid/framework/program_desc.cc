@@ -149,18 +149,22 @@ void ProgramDesc::InitFromProto() {
     blocks_.emplace_back(new BlockDesc(this, &block_desc));
   }
   for (auto &block : blocks_) {
+    for (auto* var : block->AllVars()) {
+      VLOG(5) << " var " << var->Name();
+    }
+    VLOG(5) << "finsish block";
     for (auto *op : block->AllOps()) {
       for (const auto &attr : op->Proto()->attrs()) {
         if (attr.type() == proto::AttrType::VAR) {
           std::string var_name = attr.var_name();
-          VLOG(3) << "InitFromProto: SetVarAttr " << attr.name() << " from "
+          VLOG(5) << "InitFromProto: SetVarAttr " << attr.name() << " from "
                   << var_name;
           op->SetVarAttr(attr.name(), op->FindVarRecursive(var_name));
         } else if (attr.type() == proto::AttrType::VARS) {
           auto vars_name = attr.vars_name();
           std::vector<VarDesc *> vars_desc;
           for (auto &var_name : vars_name) {
-            VLOG(3) << "InitFromProto: SetVarsAttr " << attr.name() << " from "
+            VLOG(0) << "InitFromProto: SetVarsAttr " << attr.name() << " from "
                     << var_name;
             vars_desc.emplace_back(op->FindVarRecursive(var_name));
           }
