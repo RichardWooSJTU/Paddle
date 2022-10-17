@@ -177,7 +177,6 @@ std::unique_ptr<framework::ProgramDesc> Load(
   std::string program_desc_str;
   ReadBinaryFile(prog_filename, &program_desc_str);
   VLOG(0) << "prog_filename " << prog_filename;
-  std::cout << "program: " << program_desc_str << std::endl;
 
   std::unique_ptr<framework::ProgramDesc> main_program(
       new framework::ProgramDesc(program_desc_str));
