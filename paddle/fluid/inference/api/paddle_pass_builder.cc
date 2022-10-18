@@ -196,7 +196,8 @@ GpuPassStrategy::GpuPassStrategy() : PassStrategy({}) {
       // "quant_conv2d_dequant_fuse_pass",        //
       "delete_quant_dequant_op_pass",          //
       "delete_quant_dequant_filter_op_pass",   //
-      "delete_weight_dequant_linear_op_pass",  //
+      "delete_weight_dequant_linear_op_encoder_pass",  //
+      "delete_weight_dequant_linear_op_decoder_pass",  //
       "delete_quant_dequant_linear_op_pass",   //
         "fused_multi_transformer_encoder_pass",           //
         "fused_multi_transformer_decoder_pass",           //
