@@ -28,6 +28,7 @@ namespace framework {
 namespace ir {
 namespace patterns {
 
+
 struct FusedMultiTransformerEncoderPattern : public PatternBase {
   FusedMultiTransformerEncoderPattern(PDPattern* pattern,
                                       const std::string& name_scope)
