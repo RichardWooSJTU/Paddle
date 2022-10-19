@@ -974,6 +974,7 @@ int FusedMultiTransformerEncoderPass::BuildFusion(Graph* graph,
 
     // create fused_multi_transformer
     OpDesc fused_multi_transformer_op_desc(layer_norm->Op()->Block());
+
     fused_multi_transformer_op_desc.SetType("fused_multi_transformer");
 
     // 1. Input setting
@@ -1643,6 +1644,7 @@ int FusedMultiTransformerEncoderFuseQKVPass::BuildFusion(
                           Node* layer_norm_bias,
                           Node* layer_norm_mean,
                           Node* layer_norm_variance,
+                          Node* matmul0, 
                           Node* matmul0_w,
                           Node* eltadd0_b,
                           Node* split0_k_out,
@@ -1650,6 +1652,7 @@ int FusedMultiTransformerEncoderFuseQKVPass::BuildFusion(
                           Node* eltadd_qk_b,
                         //   Node* dropout_qk,
                           Node* reshape2_0,
+                          Node* matmul_linear,
                           Node* matmul_linear_w,
                           Node* eltadd_linear_b,
                         //   Node* dropout_linear,
@@ -1659,7 +1662,9 @@ int FusedMultiTransformerEncoderFuseQKVPass::BuildFusion(
                           Node* ffn_layer_norm_bias,
                           Node* ffn_layer_norm_mean,
                           Node* ffn_layer_norm_variance,
+                          Node* ffn_matmul_0,
                           Node* ffn_matmul0_w,
+                          Node* ffn_matmul_1,
                           Node* ffn_matmul1_w,
                           Node* ffn_eltadd0_b,
                           Node* ffn_eltadd1_b,
@@ -1674,6 +1679,18 @@ int FusedMultiTransformerEncoderFuseQKVPass::BuildFusion(
             .at(3) /
         3;  // 3 for qkv
     int dim_embed = num_head * dim_head;
+
+    // Get fc op, judge whether using int8 Op
+    bool enable_int8 = false;
+
+    auto* matmul0_op = matmul0->Op();
+    auto* matmul_linear_op = matmul_linear->Op();
+    auto* ffn_matmul_0_op = ffn_matmul_0->Op();
+    auto* ffn_matmul_1_op = ffn_matmul_1->Op();
+
+    if (matmul0_op->HasAttr("input_scale")) {
+        enable_int8 = true;
+    }
 
     // Calc index of transformer layer by LayerNorm Scale name
     // This calculation assumes:
@@ -1694,7 +1711,7 @@ int FusedMultiTransformerEncoderFuseQKVPass::BuildFusion(
 
     // create fused_multi_transformer
     OpDesc fused_multi_transformer_op_desc(layer_norm->Op()->Block());
-    fused_multi_transformer_op_desc.SetType("fused_multi_transformer");
+    fused_multi_transformer_op_desc.SetType(enable_int8 ? "fused_multi_transformer_int8" : "fused_multi_transformer");
 
     // 1. Input setting
     fused_multi_transformer_op_desc.SetInput("X", {input0->Name()});
@@ -1770,6 +1787,51 @@ int FusedMultiTransformerEncoderFuseQKVPass::BuildFusion(
     // fused_multi_transformer_op_desc.SetAttr(
     //     "dropout_implementation",
     //     dropout_op->GetAttr("dropout_implementation"));
+
+    // Quantization attribute/Input
+    if (enable_int8) {
+        // Set input scale
+        fused_multi_transformer_op_desc.SetAttr("qkv_in_scale", {matmul0_op->GetAttr("input_scale")});
+        VLOG(0) << "qkv_in_scale";
+        fused_multi_transformer_op_desc.SetAttr("out_linear_in_scale", {matmul_linear_op->GetAttr("input_scale")});
+        VLOG(0) << "out_linear_in_scale";
+        fused_multi_transformer_op_desc.SetAttr("ffn1_in_scale", {ffn_matmul_0_op->GetAttr("input_scale")});
+        VLOG(0) << "ffn1_in_scale";
+        fused_multi_transformer_op_desc.SetAttr("ffn2_in_scale", {ffn_matmul_1_op->GetAttr("input_scale")});
+        VLOG(0) << "ffn2_in_scale";
+
+        // Calc outscale and Set them
+        auto qkv_weight_scale = PADDLE_GET_CONST(float, matmul0_op->GetAttr("weight_scale"));
+        auto out_weight_scale = PADDLE_GET_CONST(float, matmul_linear_op->GetAttr("weight_scale"));
+        auto ffn0_weight_scale = PADDLE_GET_CONST(float, ffn_matmul_0_op->GetAttr("weight_scale"));
+        auto ffn1_weight_scale = PADDLE_GET_CONST(float, ffn_matmul_1_op->GetAttr("weight_scale"));
+
+        auto qkv_out_scales = std::vector<float>(3 * dim_embed, 127.0f * 127.0f / qkv_weight_scale);
+        auto out_out_scales = std::vector<float>(dim_embed, 127.0f * 127.0f / out_weight_scale);
+        auto ffn0_out_scales = std::vector<float>(4 * dim_embed, 127.0f * 127.0f / ffn0_weight_scale);
+        auto ffn1_out_scales = std::vector<float>(dim_embed, 127.0f * 127.0f / ffn1_weight_scale);
+
+        auto qkv_out_scale_var = scope->Var(matmul0_w->Name()+"_out_scale");
+        auto out_out_scale_var = scope->Var(matmul_linear_w->Name()+"_out_scale");
+        auto ffn0_out_scale_var = scope->Var(ffn_matmul_0->Name()+"_out_scale");
+        auto ffn1_out_scale_var = scope->Var(ffn_matmul_1->Name()+"_out_scale");
+
+        auto qkv_out_scale_data = qkv_out_scale_var->GetMutable<LoDTensor>()->mutable_data<float>({3 * dim_embed}, platform::CPUPlace());
+        memcpy(qkv_out_scale_data, qkv_out_scales.data(), qkv_out_scales.size() * sizeof(float));
+        fused_multi_transformer_op_desc.SetInput("QKVOutScale", {matmul0_w->Name()+"_out_scale"});
+
+        auto out_out_scale_data = out_out_scale_var->GetMutable<LoDTensor>()->mutable_data<float>({dim_embed}, platform::CPUPlace());
+        memcpy(out_out_scale_data, out_out_scales.data(), out_out_scales.size() * sizeof(float));
+        fused_multi_transformer_op_desc.SetInput("OutLinearOutScale", {matmul_linear_w->Name()+"_out_scale"});
+        
+        auto ffn0_out_scale_data = ffn0_out_scale_var->GetMutable<LoDTensor>()->mutable_data<float>({4 * dim_embed}, platform::CPUPlace());
+        memcpy(ffn0_out_scale_data, ffn0_out_scales.data(), ffn0_out_scales.size() * sizeof(float));
+        fused_multi_transformer_op_desc.SetInput("OutLinearOutScale", {ffn_matmul_0->Name()+"_out_scale"});
+
+        auto ffn1_out_scale_data = ffn1_out_scale_var->GetMutable<LoDTensor>()->mutable_data<float>({dim_embed}, platform::CPUPlace());
+        memcpy(ffn1_out_scale_data, ffn1_out_scales.data(), ffn1_out_scales.size() * sizeof(float));
+        fused_multi_transformer_op_desc.SetInput("OutLinearOutScale", {ffn_matmul_1->Name()+"_out_scale"});
+    }
 
     auto* fused_multi_transformer =
         graph->CreateOpNode(&fused_multi_transformer_op_desc);
@@ -2034,6 +2096,7 @@ int FusedMultiTransformerEncoderFuseQKVPass::BuildFusion(
                  layer_norm_bias,
                  layer_norm_mean,
                  layer_norm_variance,
+                 matmul0,
                  matmul0_w,
                  eltadd0_b,
                  split0_k_out,
@@ -2041,6 +2104,7 @@ int FusedMultiTransformerEncoderFuseQKVPass::BuildFusion(
                  eltadd_qk_b,
                 //  dropout_qk,
                  reshape2_0,
+                 matmul_linear,
                  matmul_linear_w,
                  eltadd_linear_b,
                 //  dropout_linear,
@@ -2050,7 +2114,9 @@ int FusedMultiTransformerEncoderFuseQKVPass::BuildFusion(
                  ffn_layer_norm_bias,
                  ffn_layer_norm_mean,
                  ffn_layer_norm_variance,
+                 ffn_matmul0,
                  ffn_matmul0_w,
+                 ffn_matmul1, 
                  ffn_matmul1_w,
                  ffn_eltadd0_b,
                  ffn_eltadd1_b,
