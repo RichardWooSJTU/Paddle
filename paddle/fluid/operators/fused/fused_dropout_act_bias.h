@@ -120,7 +120,6 @@ __global__ void FusedDropoutActBias(
     MaskType *mask,
     const float quant_last_in_scale = 1.0,
     const float *dequant_out_scale_data = nullptr,
-    const int quant_out_scale_offset = 0,
     const float quant_next_in_scale = 1.0,
     const int quant_round_type = 1,
     const float quant_max_bound = 127.0,
@@ -164,7 +163,6 @@ __global__ void FusedDropoutActBias(
                                                  act,
                                                  quant_last_in_scale,
                                                  dequant_out_scale_data,
-                                                 quant_out_scale_offset,
                                                  quant_next_in_scale,
                                                  quant_round_type,
                                                  quant_max_bound,
@@ -248,7 +246,6 @@ void LaunchDropoutActBias(Functor act_functor,
                           const phi::GPUContext &ctx,
                           const float quant_last_in_scale = 1.0,
                           const float *dequant_out_scale_data = nullptr,
-                          const int quant_out_scale_offset = 0,
                           const float quant_next_in_scale = 1.0,
                           const int quant_round_type = 1,
                           const float quant_max_bound = 127.0,
@@ -289,7 +286,6 @@ void LaunchDropoutActBias(Functor act_functor,
             mask_data,
             quant_last_in_scale,
             dequant_out_scale_data,
-            quant_out_scale_offset,
             quant_next_in_scale);
   } else {
     const auto config = Get1DBlocksAnd2DGrids(ctx, rows, cols, real_vec_size);
@@ -309,7 +305,6 @@ void LaunchDropoutActBias(Functor act_functor,
             mask_data,
             quant_last_in_scale,
             dequant_out_scale_data,
-            quant_out_scale_offset,
             quant_next_in_scale);
   }
 }
