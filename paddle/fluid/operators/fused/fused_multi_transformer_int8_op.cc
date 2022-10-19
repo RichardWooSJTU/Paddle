@@ -341,6 +341,34 @@ class FusedMultiTransformerINT8OpMaker
         "the size of ffn2_in_scale is the same as qkv_in_scale")
         .SetDefault({});
 
+    AddAttr<std::vector<int>>(
+        "qkv_disable_quantzation_layers",
+        "In consideration of precision, some of matmul layers will not be quantized"
+        "and should be fell back to fp16/32 calculation."
+        "This attribute contains id of layers which will use fp16/32 calculation.")
+        .SetDefault({});
+
+    AddAttr<std::vector<int>>(
+        "out_linear_disable_quantzation_layers",
+        "In consideration of precision, some of matmul layers will not be quantized"
+        "and should be fell back to fp16/32 calculation."
+        "This attribute contains id of layers which will use fp16/32 calculation.")
+        .SetDefault({});
+
+    AddAttr<std::vector<int>>(
+        "ffn0_disable_quantzation_layers",
+        "In consideration of precision, some of matmul layers will not be quantized"
+        "and should be fell back to fp16/32 calculation."
+        "This attribute contains id of layers which will use fp16/32 calculation.")
+        .SetDefault({});
+
+    AddAttr<std::vector<int>>(
+        "ffn1_disable_quantzation_layers",
+        "In consideration of precision, some of matmul layers will not be quantized"
+        "and should be fell back to fp16/32 calculation."
+        "This attribute contains id of layers which will use fp16/32 calculation.")
+        .SetDefault({});
+
     AddAttr<int>(
         "quant_round_type",
         "(int, default 1) The round type of fp32 to int."

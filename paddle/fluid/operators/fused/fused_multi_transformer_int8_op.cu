@@ -34,19 +34,33 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     int dim_embed = input_x_dims[2];
     int bsz_seq = bsz * seq_len;
 
-    // quant input scales, vector, size = num_layers
+    // Layers disable quantization
+    auto qkv_disable_quant_layers = ctx.Attr<std::vector<int>>("qkv_disable_quantzation_layers");
+    auto out_linear_disable_quant_layers = ctx.Attr<std::vector<int>>("out_linear_disable_quantzation_layers");
+    auto ffn0_quant_layers = ctx.Attr<std::vector<int>>("ffn0_disable_quantzation_layers");
+    auto ffn1_quant_layers = ctx.Attr<std::vector<int>>("ffn1_disable_quantzation_layers");
+
+    auto qkv_disable_quant_layers_set = std::set<int>(qkv_disable_quant_layers.begin(), qkv_disable_quant_layers.end());
+    auto out_linear_disable_quant_layers_set = std::set<int>(out_linear_disable_quant_layers.begin(), out_linear_disable_quant_layers.end());
+    auto ffn0_quant_layers_set = std::set<int>(ffn0_quant_layers.begin(), ffn0_quant_layers.end());
+    auto ffn1_quant_layers_set = std::set<int>(ffn1_quant_layers.begin(), ffn1_quant_layers.end());
+
+
+    // Quant input scales, vector, size = num_layers
+    // Although some of layers which is disable quantozation do not need,
+    // the size of input_scale/output_scale is still eq num_layers.
     auto qkv_in_scale = ctx.Attr<std::vector<float>>("qkv_in_scale");
     auto out_linear_in_scale =
         ctx.Attr<std::vector<float>>("out_linear_in_scale");
     auto ffn1_in_scale = ctx.Attr<std::vector<float>>("ffn1_in_scale");
     auto ffn2_in_scale = ctx.Attr<std::vector<float>>("ffn2_in_scale");
 
-    // quant round type and bound
+    // Quant round type and bound
     auto quant_round_type = ctx.Attr<int>("quant_round_type");
     auto quant_max_bound = ctx.Attr<float>("quant_max_bound");
     auto quant_min_bound = ctx.Attr<float>("quant_min_bound");
 
-    // dequant output scales, tensor, size = [num_layers, n], n is gemm output
+    // Dequant output scales, tensor, size = [num_layers, n], n is gemm output
     // size
     auto qkv_out_scales = ctx.MultiInput<phi::DenseTensor>("QKVOutScale");
     auto out_linear_out_scales =
@@ -91,6 +105,9 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     // (transA, transB, compute_bias) = (false, trans_qkvw, false)
     AttnMatmulINT8<T> qkv_compute(
         dev_ctx, bsz_seq, output_size, input_size, compute_bias);
+    AttnMatMul<T> qkv_compute_fp(
+      dev_ctx,false,trans_qkvw,bsz_seq,output_size,input_size,
+                                     compute_bias);
     Tensor qkv_out;
     qkv_out.Resize({{bsz, seq_len, 3, num_head, dim_head}});
     auto *qkv_out_data =
@@ -163,6 +180,8 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     // (transA, transB, compute_bias) = (false, false, false)
     AttnMatmulINT8<T> out_linear_compute(
         dev_ctx, bsz_seq, dim_embed, hidden_size, false);
+    AttnMatMul<T> out_linear_compute_fp(
+      dev_ctx, false, false, bsz_seq, dim_embed, hidden_size, false);
 
     // 5. ln(residual + bias)
     DropoutParam dropout_param2(true, 0, true, true, 0.0, nullptr, 0);
@@ -194,6 +213,8 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     int dim_ffn = ffn1_weight_dim[0];
     AttnMatmulINT8<T> ffn1_linear_compute(
         dev_ctx, bsz_seq, dim_ffn, dim_embed, false);
+    AttnMatMul<T> ffn1_linear_compute_fp(
+        dev_ctx, false, false, bsz_seq, dim_ffn, dim_embed, false);
     Tensor ffn1_out;
     ffn1_out.Resize({{bsz_seq, dim_ffn}});
     auto *ffn1_out_data =
@@ -218,6 +239,8 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     auto ffn2_biases = ctx.MultiInput<phi::DenseTensor>("FFN2Bias");
     AttnMatmulINT8<T> ffn2_linear_compute(
         dev_ctx, bsz_seq, dim_embed, dim_ffn, false);
+    AttnMatMul<T> ffn2_linear_compute_fp(
+        dev_ctx, false, false, bsz_seq, dim_embed, dim_ffn, false);
 
     // 9. ffn2 residual bias
     DropoutParam ffn2_dropout_param(true, 0, true, true, 0.0, nullptr, 0);
@@ -274,8 +297,16 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
       if (i == 0 && pre_layer_norm) {
         auto *ln_scale_data = ln_scales[i]->data<U>();
         auto *ln_bias_data = ln_biases[i]->data<U>();
-        // TODO(wangxi): can remove mean var in inference
-        ln_compute.ComputeForward(x_data,
+        if (qkv_disable_quant_layers_set.count(i)) {
+          // layernorm no fuse
+          ln_compute.ComputeForward(x_data,
+                                  ln_scale_data,
+                                  ln_bias_data,
+                                  buf1->data<T>(),
+                                  ln_mean_data,
+                                  ln_var_data);
+        } else {
+          ln_compute.ComputeForward(x_data,
                                   ln_scale_data,
                                   ln_bias_data,
                                   input_workspace.data<int8_t>(),
@@ -287,6 +318,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
                                   quant_round_type,
                                   quant_max_bound,
                                   quant_min_bound);
+        }
       }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step1";
@@ -296,42 +328,54 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
       const Tensor *qkv_bias = qkv_biases.size() > 0 ? qkv_biases[i] : nullptr;
       // NOTE: in decoder stage, bias is fused in fmha
       const Tensor *bias = time_step ? nullptr : qkv_bias;
-      if (!pre_layer_norm && i == 0) {
-        qkv_compute.ComputeForward(qkv_weights[i],
-                                   input_x,
-                                   &input_workspace,
-                                   bias,
-                                   &qkv_out,
-                                   &output_workspace,
-                                   &qkv_out,
-                                   qkv_in_scale[i],
-                                   qkv_out_scales[i],
-                                   quant_round_type,
-                                   quant_max_bound,
-                                   quant_min_bound);
-      } else if (!pre_layer_norm) {
-        qkv_compute.ComputeForward(qkv_weights[i],
-                                   buf1,
-                                   &input_workspace,
-                                   bias,
-                                   &qkv_out,
-                                   &output_workspace,
-                                   &qkv_out,
-                                   qkv_in_scale[i],
-                                   qkv_out_scales[i],
-                                   quant_round_type,
-                                   quant_max_bound,
-                                   quant_min_bound);
+      if (qkv_disable_quant_layers_set.count(i)) {
+        if (!pre_layer_norm && i == 0) {
+          qkv_compute_fp.ComputeForward(
+              qkv_weights[i], input_x, bias, &qkv_out, &qkv_out);
+        } else {
+          qkv_compute_fp.ComputeForward(
+              qkv_weights[i], buf1, bias, &qkv_out, &qkv_out);
+        }
       } else {
-        qkv_compute.ComputeForwardINT8ToT(qkv_weights[i],
-                                          qkv_in_scale[i],
-                                          &input_workspace,
-                                          bias,
-                                          &qkv_out,
-                                          &output_workspace,
-                                          &qkv_out,
-                                          qkv_out_scales[i]);
+        if (!pre_layer_norm && i == 0) {
+          qkv_compute.ComputeForward(qkv_weights[i],
+                                    input_x,
+                                    &input_workspace,
+                                    bias,
+                                    &qkv_out,
+                                    &output_workspace,
+                                    &qkv_out,
+                                    qkv_in_scale[i],
+                                    qkv_out_scales[i],
+                                    quant_round_type,
+                                    quant_max_bound,
+                                    quant_min_bound);
+        } else if (!pre_layer_norm) {
+          qkv_compute.ComputeForward(qkv_weights[i],
+                                    buf1,
+                                    &input_workspace,
+                                    bias,
+                                    &qkv_out,
+                                    &output_workspace,
+                                    &qkv_out,
+                                    qkv_in_scale[i],
+                                    qkv_out_scales[i],
+                                    quant_round_type,
+                                    quant_max_bound,
+                                    quant_min_bound);
+        } else {
+          qkv_compute.ComputeForwardINT8ToT(qkv_weights[i],
+                                            qkv_in_scale[i],
+                                            &input_workspace,
+                                            bias,
+                                            &qkv_out,
+                                            &output_workspace,
+                                            &qkv_out,
+                                            qkv_out_scales[i]);
+        }
       }
+
+      
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step2";
 #endif
@@ -414,36 +458,50 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
       VLOG(0) << "step3";
 #endif
 
-      if (pre_layer_norm) {
-        out_linear_compute.ComputeForwardTToINT8(out_linear_weights[i],
-                                                 out_linear_in_scale[i],
-                                                 &fmha_out,
-                                                 &input_workspace,
-                                                 nullptr,
-                                                 &output_workspace,
-                                                 nullptr,
-                                                 quant_round_type,
-                                                 quant_max_bound,
-                                                 quant_min_bound);
-        AllReduce<int32_t>(output_workspace,
-                           ring_id,
-                           bsz * seq_len * num_head * dim_head,
-                           dev_ctx);
+      if (out_linear_disable_quant_layers_set.count(i)) {
+        if (pre_layer_norm) {
+          out_linear_compute_fp.ComputeForward(
+              out_linear_weights[i], &fmha_out, nullptr, buf1, nullptr);
+          AllReduce<T>(*buf1, ring_id, buf1->numel(), dev_ctx);
+        } else {
+          out_linear_compute_fp.ComputeForward(
+              out_linear_weights[i], &fmha_out, nullptr, buf0, nullptr);
+          AllReduce<T>(*buf0, ring_id, buf0->numel(), dev_ctx);
+        }
       } else {
-        out_linear_compute.ComputeForward(out_linear_weights[i],
-                                          &fmha_out,
-                                          &input_workspace,
-                                          nullptr,
-                                          buf0,
-                                          &output_workspace,
-                                          nullptr,
-                                          out_linear_in_scale[i],
-                                          out_linear_out_scales[i],
-                                          quant_round_type,
-                                          quant_max_bound,
-                                          quant_min_bound);
-        AllReduce<T>(*buf0, ring_id, buf0->numel(), dev_ctx);
+        if (pre_layer_norm) {
+          out_linear_compute.ComputeForwardTToINT8(out_linear_weights[i],
+                                                  out_linear_in_scale[i],
+                                                  &fmha_out,
+                                                  &input_workspace,
+                                                  nullptr,
+                                                  &output_workspace,
+                                                  nullptr,
+                                                  quant_round_type,
+                                                  quant_max_bound,
+                                                  quant_min_bound);
+          AllReduce<int32_t>(output_workspace,
+                            ring_id,
+                            bsz * seq_len * num_head * dim_head,
+                            dev_ctx);
+        } else {
+          out_linear_compute.ComputeForward(out_linear_weights[i],
+                                            &fmha_out,
+                                            &input_workspace,
+                                            nullptr,
+                                            buf0,
+                                            &output_workspace,
+                                            nullptr,
+                                            out_linear_in_scale[i],
+                                            out_linear_out_scales[i],
+                                            quant_round_type,
+                                            quant_max_bound,
+                                            quant_min_bound);
+          AllReduce<T>(*buf0, ring_id, buf0->numel(), dev_ctx);
+        }
       }
+
+      
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step4";
 #endif
