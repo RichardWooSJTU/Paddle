@@ -85,7 +85,7 @@ void LoadPersistables(framework::Executor* executor,
   framework::ProgramDesc* load_program = new framework::ProgramDesc();
   framework::BlockDesc* load_block = load_program->MutableBlock(0);
   std::set<std::string> parammap;
-  for(int i = 0; i < 2; ++i) {
+  for(int i = 0; i < main_program.Size(); ++i) {
     const framework::BlockDesc& global_block = main_program.Block(i);
     for (auto* var : global_block.AllVars()) {
       if (IsPersistable(var)) {

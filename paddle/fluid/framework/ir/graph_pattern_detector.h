@@ -1709,7 +1709,7 @@ struct DeleteWeightQuantDequantLinearOpPattern : public PatternBase {
 
   PATTERN_DECL_NODE(weight_dequantize_linear_op_x);
   PATTERN_DECL_NODE(weight_dequantize_linear_op_scale);
-  PATTERN_DECL_NODE(while0);
+  // PATTERN_DECL_NODE(while0);
   PATTERN_DECL_NODE(weight_dequantize_linear_op);
   PATTERN_DECL_NODE(weight_dequantize_linear_op_out);
   PATTERN_DECL_NODE(any_op2);

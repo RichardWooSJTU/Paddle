@@ -3096,8 +3096,8 @@ void patterns::DeleteWeightQuantDequantLinearOpPattern::operator()() {
   auto any_op2 = pattern->NewNode(any_op2_repr())->assert_is_op()->AsOutput();
 
   // while loop
-  auto* while0 = pattern->NewNode(while0_repr())->assert_is_op("while")->AsOutput();
-  while0->LinksFrom({weight_dequantize_linear_op_out});
+  // auto* while0 = pattern->NewNode(while0_repr())->assert_is_op("while")->AsOutput();
+  // while0->LinksFrom({weight_dequantize_linear_op_out});
 
   weight_dequantize_linear_op
       ->LinksFrom(

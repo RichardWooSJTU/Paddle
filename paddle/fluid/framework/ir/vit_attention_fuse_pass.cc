@@ -83,6 +83,16 @@ void VitAttentionFusePass::ApplyImpl(ir::Graph* graph) const {
       VLOG(3) << "vit_attention_fuse_pass only support input.dim == 3";
       return;
     }
+     PADDLE_ENFORCE_NOT_NULL(scope,
+                            paddle::platform::errors::InvalidArgument(
+                                "scope should not null"));
+     
+     PADDLE_ENFORCE_NOT_NULL(scope->FindVar(matmul0_in_y->Name()),
+                            paddle::platform::errors::InvalidArgument(
+                                "%s should not null", matmul0_in_y->Name()));
+     PADDLE_ENFORCE_NOT_NULL(scope->FindVar(elementwise0_in_y->Name()),
+                            paddle::platform::errors::InvalidArgument(
+                                "%s should not null", elementwise0_in_y->Name()));
     // refactor W and Bias
     auto* w_tensor =
         scope->FindVar(matmul0_in_y->Name())->GetMutable<LoDTensor>();
