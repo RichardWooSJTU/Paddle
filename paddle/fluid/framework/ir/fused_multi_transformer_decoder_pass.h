@@ -151,7 +151,7 @@ struct FusedMultiTransformerDecoderFuseQKVPattern : public PatternBase {
       : PatternBase(
             pattern, name_scope, "fused_multi_transformer_decoder_fuse_qkv") {}
 
-  PDNode* operator()();
+  PDNode* operator()(bool enable_int8);
 
   // Q, K, V path
   PATTERN_DECL_NODE(input0);
@@ -193,8 +193,8 @@ struct FusedMultiTransformerDecoderFuseQKVPattern : public PatternBase {
   PATTERN_DECL_NODE(eltadd_qk_out);
   PATTERN_DECL_NODE(softmax_qk);
   PATTERN_DECL_NODE(softmax_qk_out);
-  // PATTERN_DECL_NODE(dropout_qk);
-  // PATTERN_DECL_NODE(dropout_qk_out);
+  PATTERN_DECL_NODE(dropout_qk);
+  PATTERN_DECL_NODE(dropout_qk_out);
 
   // QK, V matmul
   PATTERN_DECL_NODE(matmul_qkv);
@@ -211,8 +211,8 @@ struct FusedMultiTransformerDecoderFuseQKVPattern : public PatternBase {
   PATTERN_DECL_NODE(eltadd_linear);
   PATTERN_DECL_NODE(eltadd_linear_b);
   PATTERN_DECL_NODE(eltadd_linear_out);
-  // PATTERN_DECL_NODE(dropout_linear);
-  // PATTERN_DECL_NODE(dropout_linear_out);
+  PATTERN_DECL_NODE(dropout_linear);
+  PATTERN_DECL_NODE(dropout_linear_out);
 
   // output elementwise_add
   PATTERN_DECL_NODE(eltadd_out)
@@ -239,8 +239,8 @@ struct FusedMultiTransformerDecoderFuseQKVPattern : public PatternBase {
   PATTERN_DECL_NODE(ffn_eltadd1);    // ELEMENTWISE_ADD
   PATTERN_DECL_NODE(ffn_eltadd1_b);  // ELEMENTWISE_ADD
   PATTERN_DECL_NODE(ffn_eltadd1_out);
-  // PATTERN_DECL_NODE(ffn_dropout);
-  // PATTERN_DECL_NODE(ffn_dropout_out);
+  PATTERN_DECL_NODE(ffn_dropout);
+  PATTERN_DECL_NODE(ffn_dropout_out);
 
   // output elementwise_add
   PATTERN_DECL_NODE(ffn_eltadd_out)

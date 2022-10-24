@@ -259,7 +259,7 @@ class FusedMultiTransformerINT8OpMaker
         .SetDefault(true);
     AddAttr<float>("epsilon",
                    "Constant for numerical stability [default 1e-5].")
-        .SetDefault(1e-5)
+        .SetDefault(1e-13)
         .AddCustomChecker([](const float &epsilon) {
           PADDLE_ENFORCE_EQ(epsilon >= 0.0f && epsilon <= 0.001f,
                             true,
@@ -270,7 +270,7 @@ class FusedMultiTransformerINT8OpMaker
         });
 
     AddAttr<float>("dropout_rate", "Probability of setting units to zero.")
-        .SetDefault(.5f)
+        .SetDefault(.0f)
         .AddCustomChecker([](const float &drop_p) {
           PADDLE_ENFORCE_EQ(drop_p >= 0.0f && drop_p <= 1.0f,
                             true,
@@ -286,7 +286,7 @@ class FusedMultiTransformerINT8OpMaker
         "dropout_implementation",
         "[\"downgrade_in_infer\"|\"upscale_in_train\"]"
         "The meaning is the same as 'attn_dropout_implementation'.")
-        .SetDefault("downgrade_in_infer")
+        .SetDefault("upscale_in_train")
         .AddCustomChecker([](const std::string &type) {
           PADDLE_ENFORCE_EQ(
               type == "downgrade_in_infer" || type == "upscale_in_train",

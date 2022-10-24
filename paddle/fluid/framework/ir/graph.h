@@ -172,12 +172,12 @@ class Graph {
         return GetSubGraph(0)->Set<AttrType>(attr_name, attr);
       }
     }
-    PADDLE_ENFORCE_EQ(
-        attrs_.count(attr_name),
-        0,
-        platform::errors::AlreadyExists(
-            "The attribute %s to be set already exists in the graph.",
-            attr_name));
+    // PADDLE_ENFORCE_EQ(
+    //     attrs_.count(attr_name),
+    //     0,
+    //     platform::errors::AlreadyExists(
+    //         "The attribute %s to be set already exists in the graph.",
+    //         attr_name));
     attrs_[attr_name] = attr;
     attr_dels_[attr_name] = [attr, attr_name]() {
       VLOG(3) << "deleting " << attr_name;

@@ -38,15 +38,22 @@ namespace ir {
 
 static const char kParamScopeAttr[] = "__param_scope__";
 
-static const std::vector<std::string> support_subgraph_passes = {
+static const std::unordered_set<std::string> support_subgraph_passes = {
     "fused_multi_transformer_encoder_pass",
     "fused_multi_transformer_decoder_pass",
     "fused_multi_transformer_encoder_fuse_qkv_pass",
     "fused_multi_transformer_decoder_fuse_qkv_pass",
-    "delete_weight_dequant_linear_op_encoder_pass",
-    "delete_weight_dequant_linear_op_decoder_pass",
     "delete_quant_dequant_linear_op_pass"
 };
+
+static const std::unordered_set<std::string> just_support_maingraph_passes = {
+    "delete_weight_dequant_linear_op_encoder_pass"
+};
+
+static const std::unordered_set<std::string> just_support_subgraph_passes = {
+    "delete_weight_dequant_linear_op_decoder_pass"
+};
+
 
 Graph *Pass::Apply(Graph *graph) const {
   VLOG(10) << "start to apply pass " << Type() << " to graph";
@@ -66,7 +73,9 @@ Graph *Pass::Apply(Graph *graph) const {
                       platform::errors::InvalidArgument(
                           "Required atrribute %s for graph is not set.", attr));
   }
-  ApplyImpl(graph);
+  if (!just_support_subgraph_passes.count(Type())) {
+    ApplyImpl(graph);
+  }
   // TODO(panyx0718): Add more verifications.
   PADDLE_ENFORCE_EQ(
       HasCircle(*graph),
@@ -83,9 +92,10 @@ Graph *Pass::Apply(Graph *graph) const {
   }
   graph->Get<PassRecorder>(kPassRecorder).insert(Type());
 
-  if (graph->IsMainGraph() && std::count(support_subgraph_passes.begin(),
-                                         support_subgraph_passes.end(),
-                                         Type())) {
+  if (graph->IsMainGraph() && 
+              !just_support_maingraph_passes.count(Type())  &&
+               (support_subgraph_passes.count(Type()) 
+               || just_support_subgraph_passes.count(Type())) ) {
     for (size_t i = 1; i < graph->SubGraphsSize(); i++) {
       auto *sub_graph = graph->GetSubGraph(i);
       if (!sub_graph->Has(framework::ir::kParamScopeAttr)) {

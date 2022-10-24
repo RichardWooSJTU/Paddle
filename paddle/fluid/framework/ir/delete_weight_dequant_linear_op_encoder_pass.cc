@@ -285,6 +285,7 @@ void DeleteWeightDequantLinearOpEncoderPass::ApplyImpl(ir::Graph* graph) const {
       gpd.mutable_pattern(), pattern_name);
   pattern();
   int found_count = 0;
+  bool is_int8 = false;
 
   auto handler = [&](const GraphPatternDetector::subgraph_t& subgraph,
                      Graph* g) {
@@ -296,6 +297,7 @@ void DeleteWeightDequantLinearOpEncoderPass::ApplyImpl(ir::Graph* graph) const {
       return;
     }
     */
+    is_int8 = true;
     std::unordered_set<const Node*> nodes2rm = {};
 
     auto* any_op2_desc = any_op2->Op();
@@ -342,6 +344,7 @@ void DeleteWeightDequantLinearOpEncoderPass::ApplyImpl(ir::Graph* graph) const {
     found_count++;
   };
   gpd(graph, handler);
+  graph->Set("enable_int8", new bool(is_int8));
   AddStatis(found_count);
 }
 
