@@ -43,7 +43,8 @@ static const std::unordered_set<std::string> support_subgraph_passes = {
     "fused_multi_transformer_decoder_pass",
     "fused_multi_transformer_encoder_fuse_qkv_pass",
     "fused_multi_transformer_decoder_fuse_qkv_pass",
-    "delete_quant_dequant_linear_op_pass"
+    "delete_quant_dequant_linear_op_pass",
+    "fuse_multi_layer_transformer_pass"
 };
 
 static const std::unordered_set<std::string> just_support_maingraph_passes = {

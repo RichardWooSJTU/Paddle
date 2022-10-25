@@ -108,14 +108,14 @@ void GraphPatternDetector::operator()(Graph *graph,
 }
 
 bool GraphPatternDetector::MarkPDNodesInGraph(const ir::Graph &graph) {
-  VLOG(3) << "mark pdnodes in graph";
+  VLOG(1) << "mark pdnodes in graph";
   if (graph.Nodes().empty()) return false;
 
   for (auto &node : GraphTraits::DFS(graph)) {
     if (node.Name().rfind("__control_var") == 0) continue;
     for (const auto &pdnode : pattern_.nodes()) {
       if (pdnode->Tell(&node)) {
-        VLOG(4) << "Node " << node.Name() << " marked as " << pdnode->name();
+        VLOG(1) << "Node " << node.Name() << " marked as " << pdnode->name();
         pdnodes2nodes_[pdnode.get()].insert(&node);
       }
     }
@@ -123,7 +123,7 @@ bool GraphPatternDetector::MarkPDNodesInGraph(const ir::Graph &graph) {
   // Check to early stop if some PDNode can't find matched Node.
   for (auto &pdnode : pattern_.nodes()) {
     if (!pdnodes2nodes_.count(pdnode.get())) {
-      VLOG(4) << pdnode->name() << " can't find matched Node, early stop";
+      VLOG(1) << pdnode->name() << " can't find matched Node, early stop";
       // return false;
     }
   }
@@ -232,11 +232,20 @@ GraphPatternDetector::DetectPatterns() {
     if (pre_groups.empty()) break;
     // source -> target
     for (Node *source : pdnodes2nodes_[edge.first]) {
+      VLOG(4) << "check source" << source->id();
+      //debugggg
+      // if (source->id() == 4488) {
+      //   for (auto node : source->outputs) {
+      //     VLOG(0) << node->Name();
+      //   }
+      // }
+      //end debuggg
       for (Node *target : pdnodes2nodes_[edge.second]) {
-        VLOG(8) << "check " << source->id() << " -- " << target->id();
+        VLOG(4) << "check target"  << target->id();
         // TODO(Superjomn) add some prune strategies.
         for (const auto &group : pre_groups) {
           if (IsNodesLink(source, target)) {
+            VLOG(4) << "is link";
             HitGroup new_group = group;
             bool flag = new_group.Match(source, edge.first) &&
                         new_group.Match(target, edge.second);
@@ -250,12 +259,12 @@ GraphPatternDetector::DetectPatterns() {
         }
       }
     }
-    VLOG(3) << "step " << step << " get records: " << cur_groups.size();
+    VLOG(1) << "step " << step << " get records: " << cur_groups.size();
     for (auto &group : cur_groups) {
       for (auto &item : group.roles) {
-        VLOG(4) << "node " << item.second->id() << " as " << item.first->name();
+        VLOG(1) << "node " << item.second->id() << " as " << item.first->name();
       }
-      VLOG(4) << "=========================================================";
+      VLOG(1) << "=========================================================";
     }
   }
 
