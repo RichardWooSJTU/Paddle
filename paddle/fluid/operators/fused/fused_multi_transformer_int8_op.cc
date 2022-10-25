@@ -42,6 +42,13 @@ class FusedMultiTransformerINT8Op : public framework::OperatorWithKernel {
 
     CHECK_INPUT(X);
 
+    // quant
+    CHECK_INPUTS(QKVOutScale);
+    CHECK_INPUTS(OutLinearOutScale);
+    CHECK_INPUTS(FFN1OutScale);
+    CHECK_INPUTS(FFN2OutScale);
+
+
     // attention
     CHECK_INPUTS(QKVW);
     CHECK_INPUTS(OutLinearW);

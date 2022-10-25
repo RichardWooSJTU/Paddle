@@ -1468,6 +1468,15 @@ FusedMultiTransformerDecoderPass::FusedMultiTransformerDecoderPass() {
       .End();
 }
 
+inline Node* CreatePersistableVarNode(Graph* graph, const std::string& name) {
+    auto var_desc = VarDesc(name);
+    var_desc.SetDataType(
+        framework::proto::VarType::FP32);
+    var_desc.SetPersistable(true);
+    auto node = graph->CreateVarNode(&var_desc);
+    return node;
+}
+
 int FusedMultiTransformerDecoderFuseQKVPass::BuildFusion(
     Graph* graph, const std::string& name_scope, Scope* scope) const {
   GraphPatternDetector gpd;
@@ -1649,40 +1658,54 @@ int FusedMultiTransformerDecoderFuseQKVPass::BuildFusion(
         // VLOG(0) << "ffn2_in_scale";
 
         // Calc outscale and Set them
-        auto qkv_weight_scale = PADDLE_GET_CONST(float, matmul0_op->GetAttr("weight_scale"));
-        auto out_weight_scale = PADDLE_GET_CONST(float, matmul_linear_op->GetAttr("weight_scale"));
-        auto ffn0_weight_scale = PADDLE_GET_CONST(float, ffn_matmul_0_op->GetAttr("weight_scale"));
-        auto ffn1_weight_scale = PADDLE_GET_CONST(float, ffn_matmul_1_op->GetAttr("weight_scale"));
+        // auto qkv_weight_scale = PADDLE_GET_CONST(float, matmul0_op->GetAttr("weight_scale"));
+        // auto out_weight_scale = PADDLE_GET_CONST(float, matmul_linear_op->GetAttr("weight_scale"));
+        // auto ffn0_weight_scale = PADDLE_GET_CONST(float, ffn_matmul_0_op->GetAttr("weight_scale"));
+        // auto ffn1_weight_scale = PADDLE_GET_CONST(float, ffn_matmul_1_op->GetAttr("weight_scale"));
 
-        auto qkv_out_scales = std::vector<float>(3 * dim_embed, 127.0f * 127.0f / qkv_weight_scale);
-        auto out_out_scales = std::vector<float>(dim_embed, 127.0f * 127.0f / out_weight_scale);
-        auto ffn0_out_scales = std::vector<float>(4 * dim_embed, 127.0f * 127.0f / ffn0_weight_scale);
-        auto ffn1_out_scales = std::vector<float>(dim_embed, 127.0f * 127.0f / ffn1_weight_scale);
+        // auto qkv_out_scales = std::vector<float>(3 * dim_embed, 127.0f * 127.0f / qkv_weight_scale);
+        // auto out_out_scales = std::vector<float>(dim_embed, 127.0f * 127.0f / out_weight_scale);
+        // auto ffn0_out_scales = std::vector<float>(4 * dim_embed, 127.0f * 127.0f / ffn0_weight_scale);
+        // auto ffn1_out_scales = std::vector<float>(dim_embed, 127.0f * 127.0f / ffn1_weight_scale);
 
-        auto qkv_out_scale_var = scope->Var(matmul0_w->Name()+"_out_scale");
-        auto out_out_scale_var = scope->Var(matmul_linear_w->Name()+"_out_scale");
-        auto ffn0_out_scale_var = scope->Var(ffn_matmul0_w->Name()+"_out_scale");
-        auto ffn1_out_scale_var = scope->Var(ffn_matmul1_w->Name()+"_out_scale");
+        // auto qkv_out_scale_var = scope->Var(matmul0_w->Name()+"_out_scale");
+        // auto out_out_scale_var = scope->Var(matmul_linear_w->Name()+"_out_scale");
+        // auto ffn0_out_scale_var = scope->Var(ffn_matmul0_w->Name()+"_out_scale");
+        // auto ffn1_out_scale_var = scope->Var(ffn_matmul1_w->Name()+"_out_scale");
 
-        auto qkv_out_scale_data = qkv_out_scale_var->GetMutable<LoDTensor>()->mutable_data<float>({3 * dim_embed}, platform::CPUPlace());
-        memcpy(qkv_out_scale_data, qkv_out_scales.data(), qkv_out_scales.size() * sizeof(float));
+
+        // auto qkv_out_scale_data = qkv_out_scale_var->GetMutable<LoDTensor>()->mutable_data<float>({3 * dim_embed}, platform::CPUPlace());
+        // memcpy(qkv_out_scale_data, qkv_out_scales.data(), qkv_out_scales.size() * sizeof(float));
         fused_multi_transformer_op_desc.SetInput("QKVOutScale", {matmul0_w->Name()+"_out_scale"});
 
-        auto out_out_scale_data = out_out_scale_var->GetMutable<LoDTensor>()->mutable_data<float>({dim_embed}, platform::CPUPlace());
-        memcpy(out_out_scale_data, out_out_scales.data(), out_out_scales.size() * sizeof(float));
+        // auto out_out_scale_data = out_out_scale_var->GetMutable<LoDTensor>()->mutable_data<float>({dim_embed}, platform::CPUPlace());
+        // memcpy(out_out_scale_data, out_out_scales.data(), out_out_scales.size() * sizeof(float));
         fused_multi_transformer_op_desc.SetInput("OutLinearOutScale", {matmul_linear_w->Name()+"_out_scale"});
 
-        auto ffn0_out_scale_data = ffn0_out_scale_var->GetMutable<LoDTensor>()->mutable_data<float>({4 * dim_embed}, platform::CPUPlace());
-        memcpy(ffn0_out_scale_data, ffn0_out_scales.data(), ffn0_out_scales.size() * sizeof(float));
+        // auto ffn0_out_scale_data = ffn0_out_scale_var->GetMutable<LoDTensor>()->mutable_data<float>({4 * dim_embed}, platform::CPUPlace());
+        // memcpy(ffn0_out_scale_data, ffn0_out_scales.data(), ffn0_out_scales.size() * sizeof(float));
         fused_multi_transformer_op_desc.SetInput("FFN1OutScale", {ffn_matmul0_w->Name()+"_out_scale"});
 
-        auto ffn1_out_scale_data = ffn1_out_scale_var->GetMutable<LoDTensor>()->mutable_data<float>({dim_embed}, platform::CPUPlace());
-        memcpy(ffn1_out_scale_data, ffn1_out_scales.data(), ffn1_out_scales.size() * sizeof(float));
+        // auto ffn1_out_scale_data = ffn1_out_scale_var->GetMutable<LoDTensor>()->mutable_data<float>({dim_embed}, platform::CPUPlace());
+        // memcpy(ffn1_out_scale_data, ffn1_out_scales.data(), ffn1_out_scales.size() * sizeof(float));
         fused_multi_transformer_op_desc.SetInput("FFN2OutScale", {ffn_matmul1_w->Name()+"_out_scale"});
+
     }
 
     auto* fused_multi_transformer =
         graph->CreateOpNode(&fused_multi_transformer_op_desc);
+    if (enable_int8) {
+        auto qkv_out_scale_node = CreatePersistableVarNode(graph, matmul0_w->Name()+"_out_scale");
+        auto out_out_scale_node = CreatePersistableVarNode(graph, matmul_linear_w->Name()+"_out_scale");
+        auto ffn0_out_scale_node = CreatePersistableVarNode(graph, ffn_matmul0_w->Name()+"_out_scale");
+        auto ffn1_out_scale_node = CreatePersistableVarNode(graph, ffn_matmul1_w->Name()+"_out_scale");
+
+        IR_NODE_LINK_TO(qkv_out_scale_node, fused_multi_transformer);
+        IR_NODE_LINK_TO(out_out_scale_node, fused_multi_transformer);
+        IR_NODE_LINK_TO(ffn0_out_scale_node, fused_multi_transformer);
+        IR_NODE_LINK_TO(ffn1_out_scale_node, fused_multi_transformer);
+    }
+
     IR_NODE_LINK_TO(input0, fused_multi_transformer);
     IR_NODE_LINK_TO(layer_norm_scale, fused_multi_transformer);
     IR_NODE_LINK_TO(layer_norm_bias, fused_multi_transformer);
@@ -1696,7 +1719,16 @@ int FusedMultiTransformerDecoderFuseQKVPass::BuildFusion(
     IR_NODE_LINK_TO(shape_op, shape_out);
     IR_NODE_LINK_TO(shape_out, slice_op);
     IR_NODE_LINK_TO(slice_op, slice_out);
-    IR_NODE_LINK_TO(slice_out, fused_multi_transformer)
+    IR_NODE_LINK_TO(slice_out, fused_multi_transformer);
+
+    IR_NODE_LINK_TO(matmul_linear_w, fused_multi_transformer);
+    IR_NODE_LINK_TO(eltadd_linear_b, fused_multi_transformer);
+    IR_NODE_LINK_TO(ffn_layer_norm_scale, fused_multi_transformer);
+    IR_NODE_LINK_TO(ffn_layer_norm_bias, fused_multi_transformer);
+    IR_NODE_LINK_TO(ffn_matmul0_w, fused_multi_transformer);
+    IR_NODE_LINK_TO(ffn_eltadd0_b, fused_multi_transformer);
+    IR_NODE_LINK_TO(ffn_matmul1_w, fused_multi_transformer);
+    IR_NODE_LINK_TO(ffn_eltadd1_b, fused_multi_transformer);
 
     IR_NODE_LINK_TO(fused_multi_transformer, ffn_output);
   };
@@ -1963,8 +1995,6 @@ int FusedMultiTransformerDecoderFuseQKVPass::BuildFusion(
                  dropout_linear_node);
 
     std::unordered_set<const Node*> marked_nodes({layer_norm,
-                                                  layer_norm_scale,
-                                                  layer_norm_bias,
                                                   layer_norm_mean,
                                                   layer_norm_variance,
                                                   layer_norm_out,
@@ -2002,15 +2032,11 @@ int FusedMultiTransformerDecoderFuseQKVPass::BuildFusion(
                                                   transpose2_qkv,
                                                   transpose2_qkv_out,
                                                   matmul_linear,
-                                                  matmul_linear_w,
                                                   matmul_linear_out,
                                                   eltadd_linear,
-                                                  eltadd_linear_b,
                                                   eltadd_linear_out,
                                                   eltadd_out,
                                                   ffn_layer_norm,
-                                                  ffn_layer_norm_scale,
-                                                  ffn_layer_norm_bias,
                                                   ffn_layer_norm_mean,
                                                   ffn_layer_norm_variance,
                                                   ffn_layer_norm_out,
