@@ -40,6 +40,10 @@ void IsTestPass::ApplyImpl(ir::Graph* graph) const {
   for (const Node* n : graph->Nodes()) {
     if (n->IsOp()) {
       auto* op = n->Op();
+      if (op->Type() == "softmax") {
+        VLOG(0) << "set " << op->Type() << " as use_cudnn";
+        op->SetAttr("use_cudnn", true);
+      }
       if (op->HasAttr("is_test") || op->HasProtoAttr("is_test")) {
         op->SetAttr("is_test", true);
       } else if (std::find(begin(op_list), end(op_list), op->Type()) !=
