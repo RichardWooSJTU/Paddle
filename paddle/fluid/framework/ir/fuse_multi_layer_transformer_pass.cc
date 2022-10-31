@@ -32,100 +32,85 @@ namespace ir {
 namespace patterns {
 
 std::unordered_map<std::string, std::string> FuseMultiLayerTransformerPattern::operator()(
-        bool enable_int8, int step) {
+        bool enable_int8, int num_fused_op, bool is_decoder) {
     std::string fused_multi_transformer_name = enable_int8 ? "fused_multi_transformer_int8" : "fused_multi_transformer";
     // This map is used to store node_reprs, 3 * i names will be inserted
     // cache_kv0_{i}, cache_kv1_{i}, fill_constant_batch_size_like_{i}
     std::unordered_map<std::string, std::string> node_reprs;
 
-    VLOG(0) << "step in pattern = " << step;
-    // First FusedMultiTransformer
+    VLOG(0) << "num in pattern = " << num_fused_op;
+    // x0 and src_mask is unqiue input of subgraph
     auto* x0 = pattern->NewNode(x0_repr());
     x0->assert_is_op_input(fused_multi_transformer_name, "X")->AsInput();
 
     auto* src_mask = pattern->NewNode(src_mask_repr());
     src_mask->assert_is_op_input(fused_multi_transformer_name, "SrcMask")->AsInput();
 
+    for (int i = 0; i < num_fused_op; ++i) {
 
-    auto* fused_multi_transformer0 =
-      pattern->NewNode(fused_multi_transformer0_repr())->assert_is_op(fused_multi_transformer_name);
-    auto* out0 = pattern->NewNode(out0_repr())
-                                  ->AsIntermediate()
+        // fused_multi_transformer op
+        auto fuse_op_repr = PDNodeName(name_scope_, repr_, id_, "fuse_op_" + std::to_string(i));
+        node_reprs["fuse_op_" + std::to_string(i)] = fuse_op_repr;
+        auto* fused_multi_transformer = 
+            pattern->NewNode(fuse_op_repr)->assert_is_op(fused_multi_transformer_name);
+
+        // fused_multi_transformer output
+        auto out_repr = PDNodeName(name_scope_, repr_, id_, "out_" + std::to_string(i));
+        node_reprs["out_" + std::to_string(i)] = out_repr;
+        auto* out = pattern->NewNode(out_repr)
                                   ->assert_is_op_output(fused_multi_transformer_name, "Out");
 
-    std::vector<PDNode*> cache_kv0_nodes;
-    for (int i = 0; i < step; ++i) {
-        auto cache_kv0_repr = PDNodeName(name_scope_, repr_, id_, "cache_kv0_" + std::to_string(i));
-        node_reprs["cache_kv0_" + std::to_string(i)] = cache_kv0_repr;
-        auto* cache_kv0 = pattern->NewNode(cache_kv0_repr);
-        cache_kv0->assert_is_op_nth_input(fused_multi_transformer_name, "CacheKV", i);
-        cache_kv0_nodes.push_back(cache_kv0);
+        // Links
+        if (is_decoder) {
+            fused_multi_transformer->LinksFrom({x0, src_mask}).LinksTo({out});
+        } else {
+            // catch_kv
+            auto cache_kv_repr = PDNodeName(name_scope_, repr_, id_, "cache_kv_" + std::to_string(i));
+            node_reprs["cache_kv_" + std::to_string(i)] = cache_kv_repr;
+            auto* cache_kv = pattern->NewNode(cache_kv_repr);
+            cache_kv->assert_is_op_input(fused_multi_transformer_name, "CacheKV");
+            cache_kv->AsInput();
+
+            // fill constant op is only valid in encoder
+            auto fill_const_op_repr = PDNodeName(name_scope_, repr_, id_, "fill_op_" + std::to_string(i));
+            node_reprs["fill_op_" + std::to_string(i)] = fill_const_op_repr;
+            auto fill_const_op = pattern->NewNode(fill_const_op_repr)->assert_is_op("fill_constant_batch_size_like");
+
+
+            fused_multi_transformer->LinksFrom({x0, src_mask, cache_kv}).LinksTo({out});
+            fill_const_op->LinksFrom({x0}).LinksTo({cache_kv});
+        }
+        x0 = out;
     }
-
-    auto fuse_op0_input_nodes = std::move(cache_kv0_nodes);
-    fuse_op0_input_nodes.push_back(x0);
-    fuse_op0_input_nodes.push_back(src_mask);
-    
-    fused_multi_transformer0->LinksFrom(fuse_op0_input_nodes).LinksTo({out0});      
-            
-    std::vector<PDNode*> cache_kv1_nodes;
-    for (int i = 0; i < step; ++i) {
-        std::string node_name = "fill_constant_batch_size_like_" + std::to_string(i);
-        auto fill_const_op_repr = PDNodeName(name_scope_, repr_, id_, node_name);
-        node_reprs[node_name] = fill_const_op_repr;
-        auto* fill_constant_batch_size_like = 
-            pattern->NewNode(fill_const_op_repr)->assert_is_op("fill_constant_batch_size_like");
-        
-        node_name = "cache_kv1_" + std::to_string(i);
-        auto cache_kv1_repr = PDNodeName(name_scope_, repr_, id_, node_name);
-        node_reprs[node_name] = cache_kv1_repr;
-        auto* cache_kv1 = pattern->NewNode(cache_kv1_repr);
-        cache_kv1->assert_is_op_nth_input(fused_multi_transformer_name, "CacheKV", i)
-            ->assert_is_op_nth_output("fill_constant_batch_size_like", "Out", 0);
-        cache_kv1_nodes.push_back(cache_kv1);
-        fill_constant_batch_size_like->LinksFrom({out0}).LinksTo({cache_kv1});
-    }
-    
-   
-    auto* fused_multi_transformer1 =
-      pattern->NewNode(fused_multi_transformer1_repr())->assert_is_op(fused_multi_transformer_name);
-    auto* out1 = pattern->NewNode(out1_repr())
-                                  ->AsOutput()
-                                  ->assert_is_op_output(fused_multi_transformer_name, "Out");
-
-    auto fuse_op1_input_nodes = std::move(cache_kv1_nodes);
-    fuse_op1_input_nodes.push_back(out0);
-    fuse_op1_input_nodes.push_back(src_mask);
-
-    fused_multi_transformer1->LinksFrom(fuse_op1_input_nodes).LinksTo({out1});
-    // VLOG(0) << "Link fused_multi_transformer1";
+    x0->AsOutput();
     return node_reprs;
-    // while loop
-    // auto* while0 = pattern->NewNode(while0_repr())->assert_is_op("while");
-    // while0->LinksFrom({catchkv_out0, catchkv_out1});
 }
 } // namespace pattern
 
-inline void MergeInput(OpDesc* op, VariableNameMap& inputs_names0, VariableNameMap& inputs_names1, const std::string& var_name) {
-    std::vector<std::string> tmp = inputs_names0[var_name];
-    tmp.insert(tmp.end(), inputs_names1[var_name].begin(), inputs_names1[var_name].end());
-    op->SetInput(var_name, tmp);
+inline void MergeInput(OpDesc* op, std::vector<VariableNameMap>& input_name_maps, const std::string& input_name) {
+    std::vector<std::string> tmp = input_name_maps[0][input_name];
+    for (int i = 1; i < input_name_maps.size(); ++i) {
+        tmp.insert(tmp.end(), input_name_maps[i][input_name].begin(), input_name_maps[i][input_name].end());
+    }
+    op->SetInput(input_name, tmp);
 }
 
 template <typename T>
-inline void MergeAttrs(OpDesc* op0, const OpDesc* op1, const std::string& attr_name) {
-    auto scale_vec_0 = PADDLE_GET_CONST(std::vector<T>, op0->GetAttr(attr_name));
-    auto scale_vec_1 = PADDLE_GET_CONST(std::vector<T>, op1->GetAttr(attr_name));
-    scale_vec_0.insert(scale_vec_0.end(), scale_vec_1.begin(), scale_vec_1.end());
-
-    op0->SetAttr(attr_name, scale_vec_0);
+inline void MergeAttrs(std::vector<OpDesc*>& ops, const std::string& attr_name) {
+    std::vector<T> res;
+    for (int i = 0; i < ops.size(); ++i) {
+        auto scale_vec = PADDLE_GET_CONST(std::vector<T>, ops[i]->GetAttr(attr_name));
+        res.insert(res.end(), scale_vec.begin(), scale_vec.end());
+    }
+    ops[0]->SetAttr(attr_name, res);
 }
 
 int FuseMultiLayerTransformerPass::BuildFusion(
-    Graph* graph, const std::string& name_scope, Scope* scope, int step) const {
+    Graph* graph, const std::string& name_scope, Scope* scope) const {
     GraphPatternDetector gpd;
     auto* pattern = gpd.mutable_pattern();
-    VLOG(0) << "In builf fusion";
+    VLOG(0) << "In build fusion";
+    if (!graph->Has("enable_int8")) return 0;
     bool enable_int8 = graph->Get<bool>("enable_int8");
     if (enable_int8) {
         VLOG(0) << "encoder with int8";
@@ -133,8 +118,14 @@ int FuseMultiLayerTransformerPass::BuildFusion(
         VLOG(0) << "encoder with fp";
     }
 
+    int num_fuse_op = graph->Get<int>("num_fused_multi_transformer_op");
+    VLOG(0) << "fuse op num is " << num_fuse_op;
+
+    bool is_decoder = graph->Get<bool>("is_decoder");
+    VLOG(0) << "is decoder " << is_decoder;
+
     patterns::FuseMultiLayerTransformerPattern multi_layer_pattern(pattern, name_scope);
-    auto node_reprs = multi_layer_pattern(enable_int8, step);
+    auto node_reprs = multi_layer_pattern(enable_int8, num_fuse_op, is_decoder);
     for (auto p : node_reprs) {
         VLOG(0) << "key: " << p.first << " value: " << p.second;
     }
@@ -151,99 +142,92 @@ int FuseMultiLayerTransformerPass::BuildFusion(
 
         GET_IR_NODE_FROM_SUBGRAPH(
             x0, x0, multi_layer_pattern);
-        // GET_IR_NODE_FROM_SUBGRAPH(
-        //     cache_kv0, cache_kv0, multi_layer_pattern);
-        std::vector<Node*> cache_kv0_nodes;
-        std::vector<Node*> cache_kv1_nodes;
-        std::vector<Node*> fill_op_nodes;
 
-        VLOG(0) << " Prepare to retrieve cachekv0 node with step = "<< step;
-
-        for (int i = 0; i < step; ++i) {
-            PDNode* cache_kv0_pdnode = multi_layer_pattern.PatternBase::pattern->RetrieveNode(node_reprs["cache_kv0_" + std::to_string(i)]);
-            cache_kv0_nodes.push_back(subgraph.at(cache_kv0_pdnode));
-
-            PDNode* cache_kv1_pdnode = multi_layer_pattern.PatternBase::pattern->RetrieveNode(node_reprs["cache_kv1_" + std::to_string(i)]);
-            cache_kv1_nodes.push_back(subgraph.at(cache_kv1_pdnode));
-
-            PDNode* fill_op_pdnode = multi_layer_pattern.PatternBase::pattern->RetrieveNode(node_reprs["fill_constant_batch_size_like_" + std::to_string(i)]);
-            fill_op_nodes.push_back(subgraph.at(fill_op_pdnode));
-        }
-        VLOG(0) << " Finish to retrieve cachekv0 node with step = "<< step;
-
-        GET_IR_NODE_FROM_SUBGRAPH(
-            fused_multi_transformer0, fused_multi_transformer0, multi_layer_pattern);
-        GET_IR_NODE_FROM_SUBGRAPH(
-            out0, out0, multi_layer_pattern);
-
-        // GET_IR_NODE_FROM_SUBGRAPH(
-        //     cache_kv1, cache_kv1, multi_layer_pattern);
-        // GET_IR_NODE_FROM_SUBGRAPH(
-        //     fill_constant_batch_size_like, fill_constant_batch_size_like, multi_layer_pattern);
-        GET_IR_NODE_FROM_SUBGRAPH(
-            fused_multi_transformer1, fused_multi_transformer1, multi_layer_pattern);
-        GET_IR_NODE_FROM_SUBGRAPH(
-            out1, out1, multi_layer_pattern);
-        VLOG(0) << "Finsh Get subgraph";
-
-        // Get op desc
-        auto* fused_multi_transformer0_desc = fused_multi_transformer0->Op();
-        auto* fused_multi_transformer1_desc = fused_multi_transformer1->Op();
+        VLOG(0) << "Get input node";
         
-        auto inputs_names0 = fused_multi_transformer0_desc->Inputs();
-        auto inputs_names1 = fused_multi_transformer1_desc->Inputs();
+        std::vector<Node*> fuse_op_nodes;
+        std::vector<Node*> out_nodes;
+
+        std::vector<OpDesc*> fuse_op_descs;
+        std::vector<VariableNameMap> fuse_op_input_var_name_maps;
+        std::vector<VariableNameMap> fuse_op_output_var_name_maps;
+
+        for (int i = 0; i < num_fuse_op; ++i) {
+            // fused_multi_transformer op
+            PDNode* fuse_op_pdnode = multi_layer_pattern.PatternBase::pattern->RetrieveNode(node_reprs["fuse_op_" + std::to_string(i)]);
+            Node* fuse_op_node = subgraph.at(fuse_op_pdnode);
+            fuse_op_nodes.push_back(fuse_op_node);
+            fuse_op_descs.push_back(fuse_op_node->Op());
+            fuse_op_input_var_name_maps.emplace_back(fuse_op_node->Op()->Inputs());
+            fuse_op_output_var_name_maps.emplace_back(fuse_op_node->Op()->Outputs());
+
+            // fused_multi_transformer output
+            PDNode* out_pdnode = multi_layer_pattern.PatternBase::pattern->RetrieveNode(node_reprs["out_" + std::to_string(i)]);
+            out_nodes.push_back(subgraph.at(out_pdnode));
+
+            // fill_const op use x0 as input
+            if (!is_decoder && i != 0) {
+                // fill constant op
+                PDNode* fill_op_pdnode = multi_layer_pattern.PatternBase::pattern->RetrieveNode(node_reprs["fill_op_" + std::to_string(i)]);
+                Node* fill_op_node = subgraph.at(fill_op_pdnode);
+                fill_op_node->Op()->SetInput("Input", {x0->Name()});
+                IR_NODE_UNLINK(out_nodes[i-1], fill_op_node);
+                IR_NODE_LINK_TO(x0, fill_op_node);
+            }
+
+        }
 
         // Merge inputs
-        std::vector<std::string> inputs_names = {"CacheKV", "FFN1Bias", "FFN1OutScale", "FFN1Weight", "FFN2Bias", "FFN2OutScale",
-           "FFN2OutScale",  "FFN2Weight", "FFNLnBias", "FFNLnScale", "LnBias", "LnScale", "OutLinearBias", "OutLinearOutScale", 
-           "OutLinearW", "QKVBias", "QKVOutScale", "QKVW"};
+        std::vector<std::string> inputs_names = {"CacheKV", "FFN1Bias", "FFN1Weight", "FFN2Bias", 
+            "FFN2Weight", "FFNLnBias", "FFNLnScale", "LnBias", "LnScale", "OutLinearBias", 
+           "OutLinearW", "QKVBias", "QKVW"};
+        if (enable_int8) {
+            std::vector<std::string> inputs_names_int8_supp = {"FFN1OutScale", "FFN2OutScale", "OutLinearOutScale", "QKVOutScale"};
+            inputs_names.insert(inputs_names.end(), inputs_names_int8_supp.begin(), inputs_names_int8_supp.end());
+        }
         for (const auto& input_name : inputs_names) {
-            MergeInput(fused_multi_transformer0_desc, inputs_names0, inputs_names1, input_name);
+            MergeInput(fuse_op_descs[0], fuse_op_input_var_name_maps, input_name);
         }
         VLOG(0) << "Finsh Merge input";
 
         // Merge outputs
-        auto output_names0 = fused_multi_transformer0_desc->Outputs();
-        auto output_names1 = fused_multi_transformer1_desc->Outputs();
-        fused_multi_transformer0_desc->SetOutput("Out", output_names1["Out"]);
-        output_names0["CacheKVOut"].insert(output_names0["CacheKVOut"].end(), 
-            output_names1["CacheKVOut"].begin(), output_names1["CacheKVOut"].end());
-        for (auto out_name : output_names0["CacheKVOut"]) {
-            VLOG(0) << "out_name " << out_name;
+        fuse_op_descs[0]->SetOutput("Out", fuse_op_output_var_name_maps[num_fuse_op-1]["Out"]);
+        auto& merged_cache_kv_out_names = fuse_op_output_var_name_maps[0]["CacheKVOut"];
+        for (int i = 1; i < num_fuse_op; ++i) {
+            const auto& out_var_names = fuse_op_output_var_name_maps[i]["CacheKVOut"];
+            merged_cache_kv_out_names.insert(merged_cache_kv_out_names.end(), out_var_names.begin(), out_var_names.end());
         }
-        fused_multi_transformer0_desc->SetOutput("CacheKVOut", output_names0["CacheKVOut"]);
+        // for (auto out_name : output_names0["CacheKVOut"]) {
+        //     VLOG(0) << "out_name " << out_name;
+        // }
+        fuse_op_descs[0]->SetOutput("CacheKVOut", merged_cache_kv_out_names);
 
-        // Merge inputs scale
-        std::vector<std::string> attr_names = {"qkv_in_scale", "out_linear_in_scale", "ffn1_in_scale", "ffn2_in_scale"};
-        for (const auto& name : attr_names) {
-            MergeAttrs<float>(fused_multi_transformer0_desc, fused_multi_transformer1_desc, name);
-        }
-        VLOG(0) << "Finsh Merge attrs";
-
-        // Dynamic processing
-        for (int i = 0; i < step; ++i) {
-            // Process fill_constant_op
-            // Use x as input of fill_constant_batch_size_like instead of out0
-            auto* fill_constant_batch_size_like_desc = fill_op_nodes[i]->Op();
-            fill_constant_batch_size_like_desc -> SetInput("Input", {x0->Name()});
-            IR_NODE_UNLINK(out1, fill_op_nodes[i]);
-            IR_NODE_LINK_TO(x0, fill_op_nodes[i]);
-
-            // Process cache kv node
-            IR_NODE_UNLINK(cache_kv1_nodes[i], fused_multi_transformer1);
-            IR_NODE_LINK_TO(cache_kv1_nodes[i], fused_multi_transformer0);
+        if (enable_int8) {
+            // Merge inputs scale
+            std::vector<std::string> attr_names = {"qkv_in_scale", "out_linear_in_scale", "ffn1_in_scale", "ffn2_in_scale"};
+            for (const auto& name : attr_names) {
+                MergeAttrs<float>(fuse_op_descs, name);
+            }
+            VLOG(0) << "Finsh Merge attrs";
         }
 
+        // ReLink
+        // before relink, out nodes (0 -> num_layer-1) should be removed
+        std::unordered_set<const Node*> marked_out_nodes(out_nodes.begin(), out_nodes.end()-1);
+        GraphSafeRemoveNodes(graph, marked_out_nodes);
 
-        // Relink
-        IR_NODE_UNLINK(fused_multi_transformer1, out1);
-        IR_NODE_LINK_TO(fused_multi_transformer0, out1);
+        auto& merged_inputs = fuse_op_nodes[0]->inputs;
+        for (int i = 1; i < num_fuse_op; ++i) {
+            merged_inputs.insert(merged_inputs.end(), fuse_op_nodes[i]->inputs.begin(),fuse_op_nodes[i]->inputs.end());
+        }
 
-        IR_NODE_UNLINK(src_mask, fused_multi_transformer1);
+        // Relink fuse op -> out
+        IR_NODE_UNLINK(fuse_op_nodes[num_fuse_op-1], out_nodes[num_fuse_op-1]);
+        IR_NODE_LINK_TO(fuse_op_nodes[0], out_nodes[num_fuse_op-1]);
         VLOG(0) << "Finsh relinks";
 
-        std::unordered_set<const Node*> marked_nodes({out0, fused_multi_transformer1});
-        GraphSafeRemoveNodes(graph, marked_nodes);
+        std::unordered_set<const Node*> marked_fuse_op_nodes(fuse_op_nodes.begin()+1, fuse_op_nodes.end());
+        GraphSafeRemoveNodes(graph, marked_fuse_op_nodes);
         VLOG(0) << "Finsh remove";
         ++fusion_count;
     };
@@ -261,15 +245,8 @@ void FuseMultiLayerTransformerPass::ApplyImpl(Graph* graph) const {
       platform::errors::Fatal(
           "During the fuse_multi_layer_transformer pass, "
           "The scope should not be null."));
-  int step = 1;
-  int fusion_count = BuildFusion(graph, name_scope_, scope, step++);
-  VLOG(0) << "fusion_count is " << fusion_count << " with step = " << step-1;
-  auto tmp_fusion_count = fusion_count;
-    do {
-        tmp_fusion_count = fusion_count;
-        fusion_count = BuildFusion(graph, name_scope_, scope, step++);
-        VLOG(0) << "fusion_count is " << fusion_count << " with step = " << step-1;
-    } while (tmp_fusion_count != fusion_count || fusion_count != 0);
+  int fusion_count = BuildFusion(graph, name_scope_, scope);
+  VLOG(0) << "fusion_count is " << fusion_count;
 
 //   PD_THROW("IMULTILAYER");
 

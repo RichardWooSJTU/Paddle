@@ -345,6 +345,7 @@ void DeleteWeightDequantLinearOpDecoderPass::ApplyImpl(ir::Graph* graph) const {
   };
   gpd(graph, handler);
   graph->Set("enable_int8", new bool(is_int8));
+  graph->Set("is_decoder", new bool(true));
   AddStatis(found_count);
 }
 

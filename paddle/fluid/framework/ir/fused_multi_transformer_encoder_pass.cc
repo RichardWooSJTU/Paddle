@@ -2332,6 +2332,7 @@ int FusedMultiTransformerEncoderFuseQKVPass::BuildFusion(
     ++fusion_count;
   };
   gpd(graph, handler);
+  graph->Set("num_fused_multi_transformer_op", new int(fusion_count));
 
   return fusion_count;
 }

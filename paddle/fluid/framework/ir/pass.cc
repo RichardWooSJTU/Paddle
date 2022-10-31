@@ -42,18 +42,18 @@ static const std::unordered_set<std::string> support_subgraph_passes = {
     "is_test_pass",
     "fused_multi_transformer_encoder_pass",
     "fused_multi_transformer_decoder_pass",
-    "fused_multi_transformer_encoder_fuse_qkv_pass",
-    "fused_multi_transformer_decoder_fuse_qkv_pass",
     "delete_quant_dequant_linear_op_pass",
     "fuse_multi_layer_transformer_pass"
 };
 
 static const std::unordered_set<std::string> just_support_maingraph_passes = {
-    "delete_weight_dequant_linear_op_encoder_pass"
+    "delete_weight_dequant_linear_op_encoder_pass",
+    "fused_multi_transformer_encoder_fuse_qkv_pass"
 };
 
 static const std::unordered_set<std::string> just_support_subgraph_passes = {
-    "delete_weight_dequant_linear_op_decoder_pass"
+    "delete_weight_dequant_linear_op_decoder_pass",
+    "fused_multi_transformer_decoder_fuse_qkv_pass"
 };
 
 
@@ -99,6 +99,7 @@ Graph *Pass::Apply(Graph *graph) const {
                (support_subgraph_passes.count(Type()) 
                || just_support_subgraph_passes.count(Type())) ) {
     for (size_t i = 1; i < graph->SubGraphsSize(); i++) {
+      if (i > 1 && just_support_subgraph_passes.count(Type())) break;
       auto *sub_graph = graph->GetSubGraph(i);
       if (!sub_graph->Has(framework::ir::kParamScopeAttr)) {
         sub_graph->SetNotOwned<Scope>(
