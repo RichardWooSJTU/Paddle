@@ -94,11 +94,17 @@ void GraphPatternDetector::operator()(Graph *graph,
 
   auto subgraphs = DetectPatterns();
   UniquePatterns(&subgraphs);
+
+  VLOG(0) << "UniquePatterns has subgraph " << subgraphs.size();
   SortSubgraphs(&subgraphs);
+  VLOG(0) << "SortSubgraphs has subgraph " << subgraphs.size();
   RemoveOverlappedMatch(&subgraphs);
+  VLOG(0) << "RemoveOverlappedMatch has subgraph " << subgraphs.size();
   ValidateByNodeRole(&subgraphs);
+  VLOG(0) << "ValidateByNodeRole has subgraph " << subgraphs.size();
 
   if (subgraphs.empty()) return;
+  VLOG(0) << "final has subgraph " << subgraphs.size();
 
   int id = 0;
   for (auto &g : subgraphs) {
@@ -113,6 +119,7 @@ bool GraphPatternDetector::MarkPDNodesInGraph(const ir::Graph &graph) {
 
   for (auto &node : GraphTraits::DFS(graph)) {
     if (node.Name().rfind("__control_var") == 0) continue;
+    // VLOG(0) << "hahaha node name is " << node.Name();
     for (const auto &pdnode : pattern_.nodes()) {
       if (pdnode->Tell(&node)) {
         VLOG(1) << "Node " << node.Name() << " marked as " << pdnode->name();
@@ -222,7 +229,7 @@ GraphPatternDetector::DetectPatterns() {
   // Extend a PDNode to subgraphs by deducing the connection relations defined
   // in edges of PDNodes.
   for (const auto &edge : pattern_.edges()) {
-    VLOG(4) << "check " << edge.first->name() << " -> " << edge.second->name();
+    VLOG(1) << "check " << edge.first->name() << " -> " << edge.second->name();
     // TODO(Superjomn) Fix bug here, the groups might be duplicate here.
     // Each role has two PDNodes, which indicates two roles.
     // Detect two Nodes that can match these two roles and they are connected.
@@ -275,6 +282,7 @@ GraphPatternDetector::DetectPatterns() {
     }
     result.emplace_back(subgraph);
   }
+  VLOG(0) << result.size() << " subgraphs found";
   return result;
 }
 

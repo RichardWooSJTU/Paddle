@@ -31,7 +31,7 @@ struct FuseMultiLayerTransformerPattern : public PatternBase {
       : PatternBase(
             pattern, name_scope, "fuse_multi_layer_transformer") {}
 
-  PDNode* operator()(bool enable_int8);
+  std::unordered_map<std::string, std::string> operator()(bool enable_int8, int step = 1);
 
   PATTERN_DECL_NODE(src_mask);
   PATTERN_DECL_NODE(x0);
@@ -67,7 +67,8 @@ class FuseMultiLayerTransformerPass : public FusePassBase {
  private:
   int BuildFusion(Graph* graph,
                   const std::string& name_scope,
-                  Scope* scope) const;
+                  Scope* scope, 
+                  int step = 1) const;
 };
 
 
