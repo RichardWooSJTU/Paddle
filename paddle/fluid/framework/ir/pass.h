@@ -55,6 +55,10 @@ constexpr char kFusedMultiTransformerEncoderFuseQKVPass[] =
     "fused_multi_transformer_encoder_fuse_qkv_pass_flag";
 constexpr char kFusedMultiTransformerDecoderFuseQKVPass[] =
     "fused_multi_transformer_decoder_fuse_qkv_pass_flag";
+constexpr char kFusedMultiTransformerEncoderFusionCount[] =
+    "fused_multi_transformer_encoder_fusion_count";
+constexpr char kFusedMultiTransformerDecoderFusionCount[] =
+    "fused_multi_transformer_decoder_fusion_count";
 constexpr char kPrelnEmbEltwiseLayernormPass[] =
     "preln_embedding_eltwise_layernorm_fuse_pass_flag";
 

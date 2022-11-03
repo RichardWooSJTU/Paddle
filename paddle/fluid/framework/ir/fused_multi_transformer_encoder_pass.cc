@@ -1544,6 +1544,7 @@ void FusedMultiTransformerEncoderPass::ApplyImpl(Graph* graph) const {
   int fusion_count = BuildFusion(graph, name_scope_, scope);
   if (fusion_count > 0) {
     graph->Set(kFusedMultiTransformerEncoderPass, new bool(true));
+    graph->Set(kFusedMultiTransformerEncoderFusionCount, new int(fusion_count));
   }
   AddStatis(fusion_count);
 }
@@ -2349,6 +2350,7 @@ void FusedMultiTransformerEncoderFuseQKVPass::ApplyImpl(Graph* graph) const {
   int fusion_count = BuildFusion(graph, name_scope_, scope);
   if (fusion_count > 0) {
     graph->Set(kFusedMultiTransformerEncoderFuseQKVPass, new bool(true));
+    graph->Set(kFusedMultiTransformerEncoderFusionCount, new int(fusion_count));
   }
   AddStatis(fusion_count);
 }

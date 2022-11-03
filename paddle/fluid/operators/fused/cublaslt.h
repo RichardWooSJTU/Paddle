@@ -101,11 +101,11 @@ class CublasLtHelper {
             "information"));
   }
   ~CublasLtHelper() {
-    if (handle_) dyl::cublasLtDestroy(handle_);
-    if (matmul_desc_) dyl::cublasLtMatmulDescDestroy(matmul_desc_);
-    if (A_desc_) dyl::cublasLtMatrixLayoutDestroy(A_desc_);
-    if (B_desc_) dyl::cublasLtMatrixLayoutDestroy(B_desc_);
-    if (C_desc_) dyl::cublasLtMatrixLayoutDestroy(C_desc_);
+    // if (handle_) dyl::cublasLtDestroy(handle_);
+    // if (matmul_desc_) dyl::cublasLtMatmulDescDestroy(matmul_desc_);
+    // if (A_desc_) dyl::cublasLtMatrixLayoutDestroy(A_desc_);
+    // if (B_desc_) dyl::cublasLtMatrixLayoutDestroy(B_desc_);
+    // if (C_desc_) dyl::cublasLtMatrixLayoutDestroy(C_desc_);
   }
 
   void GEMM(int8_t* A_dev,

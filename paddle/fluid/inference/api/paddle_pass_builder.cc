@@ -161,7 +161,12 @@ const std::vector<std::string> kLiteSubgraphPasses({
 // support fp16/bf16 precision, temporarily use low precision pass to prevent
 // running errors. After fusion operator supports low precision, delete this.
 const std::vector<std::string> kGpuLowerPrecisionPasses{
-    "simplify_with_basic_ops_pass",
+    // "simplify_with_basic_ops_pass",
+            "fused_multi_transformer_encoder_pass",           
+        "fused_multi_transformer_decoder_pass",           
+        "fused_multi_transformer_encoder_fuse_qkv_pass",  
+        "fused_multi_transformer_decoder_fuse_qkv_pass",  
+        "fuse_multi_layer_transformer_pass", 
     "conv_bn_fuse_pass",
     "conv_eltwiseadd_bn_fuse_pass",
     "conv_elementwise_add_act_fuse_pass",
