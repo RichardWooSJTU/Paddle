@@ -171,6 +171,7 @@ __global__ void FusedDropoutActBias(
   }
 }
 
+
 template <typename T,
           typename MaskType,
           int VecSize,
@@ -207,6 +208,7 @@ __global__ void FusedDropoutActBiasV2(
   LoadInType src_vec;
   LoadT bias_vec;
   StoreOutType out_vec;
+  LoadFloat dequant_out_scale_vec;
   for (int32_t idx = global_thread_idx * VecSize,
                step = blockDim.x * gridDim.x * VecSize;
        idx < elem_cnt;
@@ -214,10 +216,26 @@ __global__ void FusedDropoutActBiasV2(
     const int32_t col_idx = idx % cols;
     phi::Load<InType, VecSize>(&src[idx], &src_vec);
     phi::Load<T, VecSize>(&bias[col_idx], &bias_vec);
+    phi::Load<float, VecSize>(
+      &dequant_out_scale_data[col_idx],
+      &dequant_out_scale_vec);
 #pragma unroll
     for (int32_t unroll_idx = 0; unroll_idx < VecSize; unroll_idx++) {
-      out_vec[unroll_idx] = static_cast<OutType>(
-          act(static_cast<T>(src_vec[unroll_idx]) + bias_vec[unroll_idx]));
+      if (std::is_same<InType, int32_t>::value) {
+        auto tmp = 
+            act(static_cast<T>(static_cast<float>(src_vec[unroll_idx]) * quant_last_in_scale / dequant_out_scale_vec[unroll_idx])
+              + bias_vec[unroll_idx]);
+        out_vec[unroll_idx] = quant_helper(tmp,
+                                           quant_next_in_scale,
+                                           quant_round_type,
+                                           quant_max_bound,
+                                           quant_min_bound);
+      } else {
+        out_vec[unroll_idx] = static_cast<OutType>(
+            act(
+              static_cast<T>(src_vec[unroll_idx])
+              + bias_vec[unroll_idx]));
+      }
     }
     phi::Store<OutType, VecSize>(out_vec, &dst[idx]);
   }
