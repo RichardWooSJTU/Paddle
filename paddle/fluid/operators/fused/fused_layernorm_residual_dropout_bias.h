@@ -133,7 +133,10 @@ __global__ void FusedLayernormResidualDropoutBias(
   int row_id = blockIdx.x;
   int idx = row_id * cols + col_id;
   curandStatePhilox4_32_10_t state;
-  curand_init(seed, idx, increment, &state);
+  // curand_init(seed, idx, increment, &state);
+  if (dropout_prob != 0) {
+    curand_init(seed, idx, increment, &state);
+  }
 
   T factor = GetFactor<T>(dropout_prob, is_upscale_in_train, is_test);
 
@@ -237,7 +240,9 @@ __global__ void FusedLayernormResidualDropoutBiasInfer(
   int row_id = blockIdx.x;
   int idx = row_id * cols + col_id;
   curandStatePhilox4_32_10_t state;
-  curand_init(seed, idx, increment, &state);
+  if (dropout_prob != 0) {
+    curand_init(seed, idx, increment, &state);
+  }
 
   T factor = GetFactor<T>(dropout_prob, is_upscale_in_train, is_test);
 
@@ -442,7 +447,6 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void fused_fast_ln_fwd_kernel(
     OutType *__restrict__ y_ptr,
     const float quant_last_in_scale = 1.0,
     const float *__restrict__ quant_out_scale_ptr = nullptr,
-    const int quant_out_scale_offset = 0,
     const float quant_next_in_scale = 1.0,
     const int quant_round_type = 1,
     const float quant_max_bound = 127.0,
@@ -467,7 +471,10 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void fused_fast_ln_fwd_kernel(
 
   int idx = r * ELTS_PER_ROW + c;
   curandStatePhilox4_32_10_t state;
-  curand_init(seed, idx, increment, &state);
+  // curand_init(seed, idx, increment, &state);
+  if (dropout_prob != 0) {
+    curand_init(seed, idx, increment, &state);
+  }
 
   T factor = GetFactor<T>(dropout_prob, is_upscale_in_train, is_test);
 
@@ -505,7 +512,7 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void fused_fast_ln_fwd_kernel(
                                  &x_input[it]);
       if (quant_out_scale_ptr != nullptr) {
         phi::Load<float, VecSize>(
-            quant_out_scale_ptr + quant_out_scale_offset + col * VecSize,
+            quant_out_scale_ptr + col * VecSize,
             &dequant_out_scale[it]);
       }
       col += THREADS_PER_ROW;
@@ -544,7 +551,8 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void fused_fast_ln_fwd_kernel(
           if (std::is_same<InType, int32_t>::value) {
             T tmp = (static_cast<T>(static_cast<float>(x_input[it][jt]) *
                                     quant_last_in_scale /
-                                    dequant_out_scale[it][jt]) +
+                                    // dequant_out_scale[it][jt]) +
+                                    1.0) + 
                      bias[it][jt]) *
                         static_cast<T>(mask_vec[it][jt]) * factor +
                     residual[it][jt];
@@ -568,7 +576,8 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void fused_fast_ln_fwd_kernel(
             // for int32 input, we need to dequantize.
             T tmp = static_cast<T>(static_cast<float>(x_input[it][jt]) *
                                    quant_last_in_scale /
-                                   dequant_out_scale[it][jt]) *
+                                  //  dequant_out_scale[it][jt]) *
+                                  1.0) *
                         static_cast<T>(mask_vec[it][jt]) * factor +
                     residual[it][jt];
             x[it][jt] = tmp;
@@ -752,7 +761,6 @@ void LaunchLayernormResidualDropoutBias(
     const phi::GPUContext &ctx,
     const float quant_last_in_scale = 1.0,
     const float *dequant_out_scale_data = nullptr,
-    const int quant_out_scale_offset = 0,
     const float quant_next_in_scale = 1.0,
     const int quant_round_type = 1,
     const float quant_max_bound = 127.0,
@@ -844,7 +852,6 @@ void LaunchLayernormResidualDropoutBias(
                                                      layernorm_dst,           \
                                                      quant_last_in_scale,     \
                                                      dequant_out_scale_data,  \
-                                                     quant_out_scale_offset,  \
                                                      quant_next_in_scale,     \
                                                      quant_round_type,        \
                                                      quant_max_bound,         \

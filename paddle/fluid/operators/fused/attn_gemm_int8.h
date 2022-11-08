@@ -50,7 +50,6 @@ class AttnMatmulINT8 {
                       phi::DenseTensor* bias_out,
                       const float quant_in_scale,
                       const phi::DenseTensor* dequant_out_scale,
-                      const int quant_out_scale_offset,
                       const int quant_round_type = 1,
                       const float quant_max_bound = 127.0,
                       const float quant_min_bound = -127.0) {
@@ -75,8 +74,7 @@ class AttnMatmulINT8 {
                                   n_,
                                   dev_ctx_.stream(),
                                   quant_in_scale,
-                                  dequant_out_scale->data<float>(),
-                                  quant_out_scale_offset);
+                                  dequant_out_scale->data<float>());
 
     if (compute_bias_) {
       // bias_out = output + bias
@@ -99,11 +97,13 @@ class AttnMatmulINT8 {
                                 phi::DenseTensor* input,
                                 const phi::DenseTensor* bias,
                                 phi::DenseTensor* output,
-                                phi::DenseTensor* bias_out) {
+                                phi::DenseTensor* bias_out,
+                                void* workspace = nullptr) {
     helpers_[0]->GEMM(input->data<int8_t>(),
                       weight->data<int8_t>(),
                       output->data<int32_t>(),
-                      dev_ctx_.stream());
+                      dev_ctx_.stream(),
+                      workspace);
   }
 
   // This function is used to execute GEMM, with input and output's types are
@@ -115,8 +115,7 @@ class AttnMatmulINT8 {
                              phi::DenseTensor* output,
                              phi::DenseTensor* output_tmp,
                              phi::DenseTensor* bias_out,
-                             const phi::DenseTensor* dequant_out_scale,
-                             const int quant_out_scale_offset) {
+                             const phi::DenseTensor* dequant_out_scale) {
     helpers_[0]->GEMM(input->data<int8_t>(),
                       weight->data<int8_t>(),
                       output_tmp->data<int32_t>(),
@@ -128,8 +127,7 @@ class AttnMatmulINT8 {
                                   n_,
                                   dev_ctx_.stream(),
                                   quant_in_scale,
-                                  dequant_out_scale->data<float>(),
-                                  quant_out_scale_offset);
+                                  dequant_out_scale->data<float>());
 
     if (compute_bias_) {
       // bias_out = output + bias

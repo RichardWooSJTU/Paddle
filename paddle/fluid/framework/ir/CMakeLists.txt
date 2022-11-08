@@ -95,6 +95,8 @@ pass_library(shuffle_channel_detect_pass inference)
 pass_library(delete_quant_dequant_op_pass inference)
 pass_library(delete_quant_dequant_filter_op_pass inference)
 pass_library(delete_weight_dequant_linear_op_pass inference)
+pass_library(delete_weight_dequant_linear_op_encoder_pass inference)
+pass_library(delete_weight_dequant_linear_op_decoder_pass inference)
 pass_library(delete_quant_dequant_linear_op_pass inference)
 pass_library(delete_dropout_op_pass inference)
 pass_library(delete_c_identity_op_pass inference)
@@ -107,6 +109,7 @@ pass_library(skip_layernorm_fuse_pass base)
 pass_library(multihead_matmul_fuse_pass inference)
 pass_library(fused_multi_transformer_encoder_pass inference)
 pass_library(fused_multi_transformer_decoder_pass inference)
+pass_library(fuse_multi_transformer_layer_pass inference)
 pass_library(adaptive_pool2d_convert_global_pass inference)
 pass_library(unsqueeze2_eltwise_fuse_pass inference)
 pass_library(yolo_box_fuse_pass inference)
@@ -326,6 +329,10 @@ cc_test(
   test_fused_multi_transformer_decoder_pass
   SRCS fused_multi_transformer_decoder_pass_tester.cc
   DEPS fused_multi_transformer_decoder_pass)
+cc_test(
+  test_fuse_multi_transformer_layer_pass
+  SRCS fuse_multi_transformer_layer_pass_tester.cc
+  DEPS fuse_multi_transformer_layer_pass)
 cc_test(
   test_conv_bn_fuse_pass_cc
   SRCS conv_bn_fuse_pass_tester.cc

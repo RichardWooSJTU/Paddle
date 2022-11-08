@@ -49,7 +49,6 @@ __forceinline__ __device__ void FusedResidualDropoutBiasOneThread(
     Functor act_func,
     const float quant_last_in_scale = 1.0,
     const float *dequant_out_scale_data = nullptr,
-    const int quant_out_scale_offset = 0,
     const float quant_next_in_scale = 1.0,
     const int quant_round_type = 1,
     const float quant_max_bound = 127.0,
@@ -75,7 +74,7 @@ __forceinline__ __device__ void FusedResidualDropoutBiasOneThread(
   // vectorize load data from global
   phi::Load<InType, VecSize>(&src[row_id * cols + col_id], &src_vec);
   phi::Load<float, VecSize>(
-      &dequant_out_scale_data[quant_out_scale_offset + col_id],
+      &dequant_out_scale_data[col_id],
       &quant_out_scale_vec);
   if (residual) {
     phi::Load<T, VecSize>(&residual[row_id * cols + col_id], &residual_vec);
@@ -172,13 +171,14 @@ __global__ void FusedResidualDropoutBias(
     const bool is_test,
     const float quant_last_in_scale = 1.0,
     const float *dequant_out_scale_data = nullptr,
-    const int quant_out_scale_offset = 0,
     const float quant_next_in_scale = 1.0) {
   int col_id = blockDim.x * blockIdx.x + threadIdx.x;
   int row_id = blockIdx.y;
   int idx = row_id * cols + col_id;
   curandStatePhilox4_32_10_t state;
-  curand_init(seed, idx, increment, &state);
+  if (dropout_prob != 0) {
+    curand_init(seed, idx, increment, &state);
+  }
   const T factor = GetFactor<T>(dropout_prob, is_upscale_in_train, is_test);
   phi::funcs::ReluFunctor<T> relu;
   for (int r = row_id; r < rows; r += blockDim.y * gridDim.y) {
@@ -208,7 +208,6 @@ __global__ void FusedResidualDropoutBias(
                                                  relu,
                                                  quant_last_in_scale,
                                                  dequant_out_scale_data,
-                                                 quant_out_scale_offset,
                                                  quant_next_in_scale);
     }
   }
@@ -236,7 +235,6 @@ void LaunchResidualDropoutBias(const uint32_t rows,
                                const phi::GPUContext &ctx,
                                const float quant_last_in_scale = 1.0,
                                const float *dequant_out_scale_data = nullptr,
-                               const int quant_out_scale_offset = 0,
                                const float quant_next_in_scale = 1.0) {
   // dropout_prob == 1.0f
   if (std::abs(dropout_prob - 1.0f) < 1e-5) {
@@ -278,7 +276,6 @@ void LaunchResidualDropoutBias(const uint32_t rows,
             is_test,
             quant_last_in_scale,
             dequant_out_scale_data,
-            quant_out_scale_offset,
             quant_next_in_scale);
   } else {
     FusedResidualDropoutBias<T, uint8_t, 1, InType, OutType>
@@ -297,7 +294,6 @@ void LaunchResidualDropoutBias(const uint32_t rows,
             is_test,
             quant_last_in_scale,
             dequant_out_scale_data,
-            quant_out_scale_offset,
             quant_next_in_scale);
   }
 }
