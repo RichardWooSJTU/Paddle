@@ -1196,7 +1196,9 @@ int FusedMultiTransformerEncoderPass::BuildFusion(Graph* graph,
     int dim_head =
         PADDLE_GET_CONST(std::vector<int>, reshape_desc->GetAttr("shape"))
             .at(3);
-    int dim_embed = num_head * dim_head;
+    // int dim_embed = num_head * dim_head;
+    auto* layer_norm_bias_tensor = scope->FindVar(layer_norm_bias->Name())->GetMutable<phi::DenseTensor>();
+    int dim_embed = layer_norm_bias_tensor->dims()[0];
 
     // Calc index of transformer layer by LayerNorm Scale name
     // This calculation assumes:
@@ -1931,7 +1933,9 @@ int FusedMultiTransformerEncoderFuseQKVPass::BuildFusion(
         PADDLE_GET_CONST(std::vector<int>, reshape_desc->GetAttr("shape"))
             .at(3) /
         3;  // 3 for qkv
-    int dim_embed = num_head * dim_head;
+    // int dim_embed = num_head * dim_head;
+    auto* layer_norm_bias_tensor = scope->FindVar(layer_norm_bias->Name())->GetMutable<phi::DenseTensor>();
+    int dim_embed = layer_norm_bias_tensor->dims()[0];
 
     // Calc index of transformer layer by LayerNorm Scale name
     // This calculation assumes:

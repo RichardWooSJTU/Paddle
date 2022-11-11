@@ -94,24 +94,24 @@ class FusedMultiTransformerOp : public framework::OperatorWithKernel {
             y_dim));
 
     if (ctx->Attrs().Get<int>("ring_id") == -1) {
-      if (trans_qkvw) {
-        PADDLE_ENFORCE_EQ(y_dim[1] * y_dim[2],
-                          y_dim[3],
-                          platform::errors::InvalidArgument(
-                              "The dimensions of qkv_weight must be 4"
-                              "(3, num_head, dim_head, dim_embed),"
-                              "and must satisfy the limitations: "
-                              "(num_head * dim_head == dim_embed)"));
+    //   if (trans_qkvw) {
+    //     PADDLE_ENFORCE_EQ(y_dim[1] * y_dim[2],
+    //                       y_dim[3],
+    //                       platform::errors::InvalidArgument(
+    //                           "The dimensions of qkv_weight must be 4"
+    //                           "(3, num_head, dim_head, dim_embed),"
+    //                           "and must satisfy the limitations: "
+    //                           "(num_head * dim_head == dim_embed)"));
 
-      } else {
-        PADDLE_ENFORCE_EQ(y_dim[2] * y_dim[3],
-                          y_dim[0],
-                          platform::errors::InvalidArgument(
-                              "The dimensions of qkv_weight must be 4"
-                              "(dim_embed, 3, num_head, dim_head),"
-                              "and must satisfy the limitations: "
-                              "(num_head * dim_head == dim_embed)"));
-      }
+    //   } else {
+    //     PADDLE_ENFORCE_EQ(y_dim[2] * y_dim[3],
+    //                       y_dim[0],
+    //                       platform::errors::InvalidArgument(
+    //                           "The dimensions of qkv_weight must be 4"
+    //                           "(dim_embed, 3, num_head, dim_head),"
+    //                           "and must satisfy the limitations: "
+    //                           "(num_head * dim_head == dim_embed)"));
+    //   }
     }
 
     if (ctx->HasInputs("CacheKV")) {
