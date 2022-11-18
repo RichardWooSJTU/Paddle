@@ -223,7 +223,9 @@ __global__ void FusedDropoutActBiasV2(
     for (int32_t unroll_idx = 0; unroll_idx < VecSize; unroll_idx++) {
       if (std::is_same<InType, int32_t>::value) {
         auto tmp = 
-            act(static_cast<T>(static_cast<float>(src_vec[unroll_idx]) * quant_last_in_scale / dequant_out_scale_vec[unroll_idx])
+            // act(static_cast<T>(static_cast<float>(src_vec[unroll_idx]) * quant_last_in_scale / dequant_out_scale_vec[unroll_idx])
+            //   + bias_vec[unroll_idx]);
+            act(static_cast<T>(static_cast<float>(src_vec[unroll_idx]) *  dequant_out_scale_vec[unroll_idx])
               + bias_vec[unroll_idx]);
         out_vec[unroll_idx] = quant_helper(tmp,
                                            quant_next_in_scale,
