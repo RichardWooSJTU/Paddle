@@ -503,7 +503,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
       // step6. ffn matmul1
 
       if (pre_layer_norm) {
-        VLOG(0) << "cpp ffn1 int input: " << input_workspace;
+        // VLOG(0) << "cpp ffn1 int input: " << input_workspace;
         ffn1_linear_compute.ComputeForwardINT8ToINT8(
             ffn1_weights[i],
             &input_workspace,
@@ -511,7 +511,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
             &output_workspace,
             nullptr,
             cublaslt_workspace.data<int8_t>());
-        VLOG(0) << "cpp ffn1 int output: " << output_workspace;
+        // VLOG(0) << "cpp ffn1 int output: " << output_workspace;
       } else {
         ffn1_linear_compute.ComputeForward(ffn1_weights[i],
                                            buf1,
@@ -561,7 +561,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 
       // step8. ffn matmul2
       if (pre_layer_norm) {
-        VLOG(0) << "cpp ffn2 int input: " << input_workspace;
+        // VLOG(0) << "cpp ffn2 int input: " << input_workspace;
         ffn2_linear_compute.ComputeForwardINT8ToINT8(
             ffn2_weights[i],
             &input_workspace,
@@ -569,7 +569,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
             &output_workspace,
             nullptr,
             cublaslt_workspace.data<int8_t>());
-        VLOG(0) << "cpp ffn2 int output: " << output_workspace;
+        // VLOG(0) << "cpp ffn2 int output: " << output_workspace;
       } else {
         ffn2_linear_compute.ComputeForward(ffn2_weights[i],
                                            &ffn1_dropout_out,
