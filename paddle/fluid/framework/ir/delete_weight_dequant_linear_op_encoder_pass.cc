@@ -309,7 +309,8 @@ void DeleteWeightDequantLinearOpEncoderPass::ApplyImpl(ir::Graph* graph) const {
         scope->GetVar(weight_dequantize_linear_op_scale->Name())
             ->GetMutable<phi::DenseTensor>();
     float* weight_scale_data =
-        weight_scale_tensor->mutable_data<float>(platform::CPUPlace());
+        (float*)weight_scale_tensor->mutable_data<phi::dtype::float16>(
+            platform::CPUPlace());
 
     auto weight_scale_nums = weight_scale_tensor->numel();
     for (int i = 0; i < weight_scale_nums; i++) {
@@ -328,9 +329,10 @@ void DeleteWeightDequantLinearOpEncoderPass::ApplyImpl(ir::Graph* graph) const {
       // Add attr to anyop 2
       any_op2_desc->SetAttr("weight_scale", weight_scale[0]);
     } else {
-      PADDLE_THROW(platform::errors::Unimplemented(
-          "Delete Weight Dequant Linear Op Encoder Pass is not supported for "
-          "per-channel quantization"));
+      any_op2_desc->SetAttr("weight_scale", 0.001);
+      //   PADDLE_THROW(platform::errors::Unimplemented(
+      //       "Delete Weight Dequant Linear Op Encoder Pass is not supported
+      //       for " "per-channel quantization"));
     }
 
     nodes2rm.insert(weight_dequantize_linear_op_scale);

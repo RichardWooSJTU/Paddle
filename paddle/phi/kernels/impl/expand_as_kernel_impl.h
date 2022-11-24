@@ -97,6 +97,10 @@ void ExpandAsKernel(const Context& ctx,
                     const std::vector<int>& target_shape,
                     DenseTensor* out) {
   auto rank = x.dims().size();
+  std::vector<int> target_shapes(y->dims().size());
+  for (int i = 0; i < y->dims().size(); ++i) {
+    target_shapes[i] = y->dims()[i];
+  }
   auto target_rank = target_shape.size();
   PADDLE_ENFORCE_GE(target_rank,
                     rank,
@@ -122,22 +126,22 @@ void ExpandAsKernel(const Context& ctx,
 
   switch (target_rank) {
     case 1:
-      ExpandAs<Context, T, 1>(ctx, x, target_shape, out);
+      ExpandAs<Context, T, 1>(ctx, x, target_shapes, out);
       break;
     case 2:
-      ExpandAs<Context, T, 2>(ctx, x, target_shape, out);
+      ExpandAs<Context, T, 2>(ctx, x, target_shapes, out);
       break;
     case 3:
-      ExpandAs<Context, T, 3>(ctx, x, target_shape, out);
+      ExpandAs<Context, T, 3>(ctx, x, target_shapes, out);
       break;
     case 4:
-      ExpandAs<Context, T, 4>(ctx, x, target_shape, out);
+      ExpandAs<Context, T, 4>(ctx, x, target_shapes, out);
       break;
     case 5:
-      ExpandAs<Context, T, 5>(ctx, x, target_shape, out);
+      ExpandAs<Context, T, 5>(ctx, x, target_shapes, out);
       break;
     case 6:
-      ExpandAs<Context, T, 6>(ctx, x, target_shape, out);
+      ExpandAs<Context, T, 6>(ctx, x, target_shapes, out);
       break;
   }
 }

@@ -121,7 +121,8 @@ void DeleteQuantDequantLinearOpPass::ApplyImpl(ir::Graph* graph) const {
         true,
         platform::errors::InvalidArgument(
             "Input scale tensor's place should be CPU."));
-    const float* input_scale_data = input_scale_tensor.data<float>();
+    const float* input_scale_data =
+        (float*)input_scale_tensor.data<phi::dtype::float16>();
     float input_scale = input_scale_data[0];
 
     int nums_any_ops = dequantize_linear_op_out->outputs.size();

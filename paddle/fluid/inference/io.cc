@@ -1,11 +1,8 @@
 /* Copyright (c) 2018 PaddlePaddle Authors. All Rights Reserved.
-
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
-
     http://www.apache.org/licenses/LICENSE-2.0
-
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -59,6 +56,7 @@ void ReadBinaryFile(const std::string& filename, std::string* contents) {
   fin.seekg(0, std::ios::end);
   contents->clear();
   contents->resize(fin.tellg());
+  VLOG(5) << "read " << fin.tellg() << " bytes from " << filename;
   fin.seekg(0, std::ios::beg);
   fin.read(&(contents->at(0)), contents->size());
   fin.close();
@@ -80,46 +78,53 @@ void LoadPersistables(framework::Executor* executor,
                       const std::string& dirname,
                       const std::string& param_filename,
                       bool model_from_memory = false) {
-  const framework::BlockDesc& global_block = main_program.Block(0);
-
   framework::ProgramDesc* load_program = new framework::ProgramDesc();
   framework::BlockDesc* load_block = load_program->MutableBlock(0);
-  std::vector<std::string> paramlist;
+  std::set<std::string> parammap;
+  for (int i = 0; i < main_program.Size(); ++i) {
+    const framework::BlockDesc& global_block = main_program.Block(i);
+    for (auto* var : global_block.AllVars()) {
+      if (IsPersistable(var)) {
+        // VLOG(0) << "persistable variable's name: " << var->Name();
 
-  for (auto* var : global_block.AllVars()) {
-    if (IsPersistable(var)) {
-      VLOG(4) << "persistable variable's name: " << var->Name();
+        framework::VarDesc* new_var = load_block->Var(var->Name());
+        new_var->SetShape(var->GetShape());
+        new_var->SetDataType(var->GetDataType());
+        auto var_type = var->GetType();
+        new_var->SetType(var_type);
 
-      framework::VarDesc* new_var = load_block->Var(var->Name());
-      new_var->SetShape(var->GetShape());
-      new_var->SetDataType(var->GetDataType());
-      auto var_type = var->GetType();
-      new_var->SetType(var_type);
+        if ((var_type !=
+             framework::proto::VarType::Type::VarType_Type_SELECTED_ROWS) &&
+            (var_type != framework::proto::VarType::VOCAB)) {
+          new_var->SetLoDLevel(var->GetLoDLevel());
+        }
 
-      if ((var_type !=
-           framework::proto::VarType::Type::VarType_Type_SELECTED_ROWS) &&
-          (var_type != framework::proto::VarType::VOCAB)) {
-        new_var->SetLoDLevel(var->GetLoDLevel());
-      }
+        new_var->SetPersistable(true);
 
-      new_var->SetPersistable(true);
-
-      if (!param_filename.empty()) {
-        paramlist.push_back(new_var->Name());
+        if (!param_filename.empty()) {
+          // paramlist.push_back(new_var->Name());
+          parammap.insert(new_var->Name());
+        } else {
+          // append_op
+          framework::OpDesc* op = load_block->AppendOp();
+          op->SetType("load");
+          op->SetOutput("Out", {new_var->Name()});
+          op->SetAttr("file_path", {dirname + "/" + new_var->Name()});
+          op->CheckAttrs();
+        }
       } else {
-        // append_op
-        framework::OpDesc* op = load_block->AppendOp();
-        op->SetType("load");
-        op->SetOutput("Out", {new_var->Name()});
-        op->SetAttr("file_path", {dirname + "/" + new_var->Name()});
-        op->CheckAttrs();
+        // VLOG(0) << "not persistable var " << var->Name();
       }
     }
   }
 
   if (!param_filename.empty()) {
     // sort paramlist to have consistent ordering
+    std::vector<std::string> paramlist(parammap.begin(), parammap.end());
     std::sort(paramlist.begin(), paramlist.end());
+    for (auto s : paramlist) {
+      VLOG(5) << "io::var: " << s;
+    }
     // append just the load_combine op
     framework::OpDesc* op = load_block->AppendOp();
     op->SetType("load_combine");
@@ -139,9 +144,8 @@ std::unique_ptr<framework::ProgramDesc> Load(framework::Executor* executor,
                                              const std::string& dirname) {
   std::string model_filename = dirname + "/__model__";
   std::string program_desc_str;
-  VLOG(3) << "loading model from " << model_filename;
+  VLOG(5) << "loading model from " << model_filename;
   ReadBinaryFile(model_filename, &program_desc_str);
-
   std::unique_ptr<framework::ProgramDesc> main_program(
       new framework::ProgramDesc(program_desc_str));
   PADDLE_ENFORCE_EQ(
@@ -167,6 +171,7 @@ std::unique_ptr<framework::ProgramDesc> Load(framework::Executor* executor,
                                              bool load_params) {
   std::string program_desc_str;
   ReadBinaryFile(prog_filename, &program_desc_str);
+  VLOG(0) << "prog_filename " << prog_filename;
 
   std::unique_ptr<framework::ProgramDesc> main_program(
       new framework::ProgramDesc(program_desc_str));
@@ -175,14 +180,13 @@ std::unique_ptr<framework::ProgramDesc> Load(framework::Executor* executor,
       true,
       platform::errors::Unavailable("Model version %ld is not supported.",
                                     main_program->Version()));
-  if (load_params) {
-    LoadPersistables(executor,
-                     scope,
-                     *main_program,
-                     "",
-                     param_filename,
-                     false /* model_from_memory */);
-  }
+
+  LoadPersistables(executor,
+                   scope,
+                   *main_program,
+                   "",
+                   param_filename,
+                   false /* model_from_memory */);
   return main_program;
 }
 

@@ -2543,6 +2543,7 @@ int MultiDevicesFusedMultiTransformerDecoderFuseQKVPass::BuildFusion(
                           Node* ffn_layer_norm_bias,
                           Node* ffn_layer_norm_mean,
                           Node* ffn_layer_norm_variance,
+                          Node* ffn_c_identity,
                           Node* ffn_matmul0,
                           Node* ffn_matmul0_w,
                           Node* ffn_matmul1,
@@ -2629,16 +2630,24 @@ int MultiDevicesFusedMultiTransformerDecoderFuseQKVPass::BuildFusion(
 
     if (enable_int8) {
       // Set input scale
-      std::string qkv_input_name = matmul0_op->Input("X")[0];
+      //   std::string qkv_input_name = matmul0_op->Input("X")[0];
+      std::string matmul_input_scale_suffix = c_identity_op->Input("X")[0];
       auto qkv_in_scale = PADDLE_GET_CONST(
-          float, matmul0_op->GetAttr("Input_scale_" + qkv_input_name));
+          float,
+          c_identity_op->GetAttr("Input_scale_" + matmul_input_scale_suffix));
+
       std::string out_linear_input_name = matmul_linear_op->Input("X")[0];
       auto out_linear_in_scale = PADDLE_GET_CONST(
           float,
           matmul_linear_op->GetAttr("Input_scale_" + out_linear_input_name));
-      std::string ffn0_input_name = ffn_matmul_0_op->Input("X")[0];
+
+      //   std::string ffn0_input_name = ffn_matmul_0_op->Input("X")[0];
+      auto* ffn_c_identity_op = ffn_c_identity->Op();
+      std::string ffn_input_scale_suffix = ffn_c_identity_op->Input("X")[0];
       auto ffn0_in_scale = PADDLE_GET_CONST(
-          float, ffn_matmul_0_op->GetAttr("Input_scale_" + ffn0_input_name));
+          float,
+          ffn_c_identity_op->GetAttr("Input_scale_" + ffn_input_scale_suffix));
+
       std::string ffn1_input_name = ffn_matmul_1_op->Input("X")[0];
       auto ffn1_in_scale = PADDLE_GET_CONST(
           float, ffn_matmul_1_op->GetAttr("Input_scale_" + ffn1_input_name));
@@ -2984,6 +2993,7 @@ int MultiDevicesFusedMultiTransformerDecoderFuseQKVPass::BuildFusion(
                  ffn_layer_norm_bias,
                  ffn_layer_norm_mean,
                  ffn_layer_norm_variance,
+                 ffn_c_identity,
                  ffn_matmul0,
                  ffn_matmul0_w,
                  ffn_matmul1,

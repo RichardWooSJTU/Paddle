@@ -1235,7 +1235,7 @@ void ExpandAsInferMeta(const MetaTensor& x,
                         "to %d. But received: rank %u.",
                         MAX_RANK_SUPPORTED,
                         target_shape.size()));
-  out->set_dims(phi::make_ddim(target_shape));
+  out->set_dims(y.dims());
   out->set_dtype(x.dtype());
 #undef MAX_RANK_SUPPORTED
 }

@@ -2893,8 +2893,9 @@ class ReplaceFakeQuantDequantPass:
 
         for op in graph.all_op_nodes():
             if (
-                op.name() in _fake_quant_dequant_op_list
-                or op.name() == "moving_average_abs_max_scale"
+                op.name()
+                in _fake_quant_dequant_op_list
+                # or op.name() == "moving_average_abs_max_scale"
             ):
                 fake_quant_dequant_ops.append(op)
 
