@@ -24,11 +24,55 @@ limitations under the License. */
 #include "paddle/phi/kernels/funcs/broadcast_function.h"
 #include "paddle/phi/kernels/funcs/elementwise_functor.h"
 
+// #define DEBUG_PRINT
 namespace paddle {
 namespace operators {
 
 using Tensor = phi::DenseTensor;
 using phi::backends::gpu::GpuLaunchConfig;
+
+#ifdef DEBUG_PRINT
+template <typename T>
+static void PrintMatrix(const T* mat_d, int num, std::string name) {
+  // if (debug_layers.count(layer) == 0) return;
+  // if (debug_steps.count(step) == 0) return;
+
+  std::vector<T> tmp(num);
+  cudaMemcpy(tmp.data(), mat_d, sizeof(T) * num, cudaMemcpyDeviceToHost);
+  int sum_i8 = 0;
+
+  std::ofstream outfile;
+  outfile.open(name + ".txt", std::ios::out);
+  std::stringstream ss;
+
+  // calc mean and var
+  auto sum = std::accumulate(tmp.begin(), tmp.end(), 0);
+  float mean = (float)sum / (float)num;  // NOLINT
+  auto max = std::max_element(tmp.begin(), tmp.end());
+  ss << "mean: " << mean << std::endl;
+  ss << "max: " << (float)max[0] << std::endl;  // NOLINT
+
+  for (int i = 0; i < num; ++i) {
+    if (std::is_same<T, int8_t>::value) {
+      ss << static_cast<int>(tmp[i]) << std::endl;
+      // sum_i8 += static_cast<int>(tmp[i*n+j]);
+    } else {
+      ss << std::setprecision(8) << tmp[i] << std::endl;
+      // sum += tmp[i*n+j];
+    }
+  }
+  outfile << ss.str();
+  // if(std::is_same<T, int8_t>::value) {
+  //   std::cout << "sum = " << sum_i8 << std::endl;
+  // } else {
+  //   std::cout << "sum = " << sum << std::endl;
+  // }
+  outfile.close();
+}
+#else
+template <typename T>
+static void PrintMatrix(const T* mat_d, int num, std::string name) {}
+#endif
 
 template <typename T>
 class AttnMatmulINT8 {
@@ -121,13 +165,21 @@ class AttnMatmulINT8 {
                              phi::DenseTensor* output,
                              phi::DenseTensor* output_tmp,
                              phi::DenseTensor* bias_out,
-                             const phi::DenseTensor* dequant_out_scale) {
-    // VLOG(0) << "qkv input: " << *input;
+                             const phi::DenseTensor* dequant_out_scale,
+                             int i = 0,
+                             int ts = 0) {
+    VLOG(1) << "qkv input: " << *input;
+    PrintMatrix(input->data<int8_t>(),
+                m_ * k_,
+                std::to_string(ts) + "_qkv_intput_int_" + std::to_string(i));
     helpers_[0]->GEMM(input->data<int8_t>(),
                       weight->data<int8_t>(),
                       output_tmp->data<int32_t>(),
                       dev_ctx_.stream());
-    // VLOG(0) << "qkv int32 output: " << *output_tmp;
+    VLOG(1) << "qkv int32 output: " << *output_tmp;
+    PrintMatrix(output_tmp->data<int32_t>(),
+                m_ * n_,
+                std::to_string(ts) + "_qkv_output_int_" + std::to_string(i));
 
     dequantize_kernel_launcher<T>(output_tmp->data<int32_t>(),
                                   output->data<T>(),
@@ -138,7 +190,10 @@ class AttnMatmulINT8 {
                                   quant_in_scale,
                                   dequant_out_scale->data<float>());
 
-    // VLOG(0) << "qkv float output: " << *output;
+    VLOG(1) << "qkv float output: " << *output;
+    PrintMatrix(output->data<float>(),
+                m_ * n_,
+                std::to_string(ts) + "_qkv_output_float_" + std::to_string(i));
 
     if (compute_bias_) {
       // bias_out = output + bias
@@ -166,8 +221,14 @@ class AttnMatmulINT8 {
                              phi::DenseTensor* bias_out,
                              const int quant_round_type = 1,
                              const float quant_max_bound = 127.0,
-                             const float quant_min_bound = -127.0) {
-    // VLOG(0) << "outlinear float input: " << *input;
+                             const float quant_min_bound = -127.0,
+                             int i = 0,
+                             int ts = 0) {
+    VLOG(1) << "outlinear float input: " << *input;
+    PrintMatrix(
+        input->data<float>(),
+        m_ * k_,
+        std::to_string(ts) + "_outlinear_input_float_" + std::to_string(i));
     quantize_kernel_launcher<T>(input->data<T>(),
                                 input_tmp->data<int8_t>(),
                                 quant_in_scale,
@@ -177,13 +238,21 @@ class AttnMatmulINT8 {
                                 quant_max_bound,
                                 quant_min_bound,
                                 dev_ctx_.stream());
-    // VLOG(0) << "outlinear int8 input: " << *input_tmp;
+    VLOG(1) << "outlinear int8 input: " << *input_tmp;
+    PrintMatrix(
+        input_tmp->data<int8_t>(),
+        m_ * k_,
+        std::to_string(ts) + "_outlinear_input_int_" + std::to_string(i));
 
     helpers_[0]->GEMM(input_tmp->data<int8_t>(),
                       weight->data<int8_t>(),
                       output->data<int32_t>(),
                       dev_ctx_.stream());
-    // VLOG(0) << "outlinear int32 output: " << *output;
+    VLOG(1) << "outlinear int32 output: " << *output;
+    PrintMatrix(
+        output->data<int32_t>(),
+        m_ * n_,
+        std::to_string(ts) + "_outlinear_output_int_" + std::to_string(i));
   }
 
  private:

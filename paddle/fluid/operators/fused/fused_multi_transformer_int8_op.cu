@@ -41,6 +41,15 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     auto ffn1_in_scale = ctx.Attr<std::vector<float>>("ffn1_in_scale");
     auto ffn2_in_scale = ctx.Attr<std::vector<float>>("ffn2_in_scale");
 
+    VLOG(1) << "qkv_in_scale: ";
+    for (auto e : qkv_in_scale) VLOG(1) << e;
+    VLOG(1) << "out_linear_in_scale: ";
+    for (auto e : out_linear_in_scale) VLOG(1) << e;
+    VLOG(1) << "ffn1_in_scale: ";
+    for (auto e : ffn1_in_scale) VLOG(1) << e;
+    VLOG(1) << "ffn2_in_scale: ";
+    for (auto e : ffn2_in_scale) VLOG(1) << e;
+
     // quant round type and bound
     auto quant_round_type = ctx.Attr<int>("quant_round_type");
     auto quant_max_bound = ctx.Attr<float>("quant_max_bound");
@@ -124,10 +133,19 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
       out_seq_len += time_step_value;
     }
 
-    Tensor transpose_out_2, qk_out;
+    Tensor transpose_out_2;  //, qk_out;
     transpose_out_2.Resize({{3, bsz, num_head, seq_len, dim_head}});
     auto *transpose_out_2_data =
         dev_ctx.Alloc<T>(&transpose_out_2, transpose_out_2.numel() * sizeof(T));
+
+    Tensor q_transpose_out, kv_transpose_out, qk_out;
+    q_transpose_out.Resize({{bsz, num_head, seq_len, dim_head}});
+    auto *q_transpose_out_data =
+        dev_ctx.Alloc<T>(&q_transpose_out, q_transpose_out.numel() * sizeof(T));
+
+    kv_transpose_out.Resize({{2, bsz, num_head, seq_len, dim_head}});
+    auto *kv_transpose_out_data = dev_ctx.Alloc<T>(
+        &kv_transpose_out, kv_transpose_out.numel() * sizeof(T));
 
     qk_out.Resize({{bsz, num_head, seq_len, out_seq_len}});
     auto *qk_out_data = dev_ctx.Alloc<T>(&qk_out, qk_out.numel() * sizeof(T));
@@ -334,7 +352,9 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
                                           &qkv_out,
                                           &output_workspace,
                                           &qkv_out,
-                                          qkv_out_scales[i]);
+                                          qkv_out_scales[i],
+                                          i,
+                                          out_seq_len);
       }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step2";
@@ -361,25 +381,88 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
                 1. / sqrt(dim_head));
       } else if (cache_kv_out) {  // generation context stage
         // TODO(wangxi): can remove dropout in inference
-        fmha_compute.ComputeForward(qkv_out,
-                                    nullptr,
-                                    src_mask,
-                                    &transpose_out_2,
-                                    nullptr,
-                                    &qk_out,
-                                    nullptr,
-                                    &softmax_out,
-                                    &attn_dropout_mask_out,
-                                    &attn_dropout_out,
-                                    &qktv_out,
-                                    &fmha_out);
-        // [3, bsz, num_head, seq_len, head_dim]
-        T *qkv_data = transpose_out_2_data;
-        int64_t q_size = bsz * seq_len * num_head * dim_head;
-        int64_t k_size = q_size;
-        const T *q_ptr = qkv_data;
-        const T *k_ptr = q_ptr + q_size;
-        const T *v_ptr = k_ptr + k_size;
+        // fmha_compute.ComputeForward(qkv_out,
+        //                             nullptr,
+        //                             src_mask,
+        //                             &transpose_out_2,
+        //                             nullptr,
+        //                             &qk_out,
+        //                             nullptr,
+        //                             &softmax_out,
+        //                             &attn_dropout_mask_out,
+        //                             &attn_dropout_out,
+        //                             &qktv_out,
+        //                             &fmha_out);
+        // // [3, bsz, num_head, seq_len, head_dim]
+        // T *qkv_data = transpose_out_2_data;
+        // int64_t q_size = bsz * seq_len * num_head * dim_head;
+        // int64_t k_size = q_size;
+        // const T *q_ptr = qkv_data;
+        // const T *k_ptr = q_ptr + q_size;
+        // const T *v_ptr = k_ptr + k_size;
+
+        // // [2, bsz, num_head, max_seq_len, head_dim]
+        // int max_seq_len = cache_kv_out->dims()[3];
+        // T *cache_kv_data = cache_kv_out->data<T>();
+        // int64_t cache_k_size = bsz * num_head * max_seq_len * dim_head;
+
+        // T *cache_k_ptr = cache_kv_data;
+        // T *cache_v_ptr = cache_kv_data + cache_k_size;
+
+        // write_cache_kv<T>(dev_ctx,
+        //                   cache_k_ptr,
+        //                   cache_v_ptr,
+        //                   k_ptr,
+        //                   v_ptr,
+        //                   bsz,
+        //                   num_head,
+        //                   seq_len,
+        //                   max_seq_len,
+        //                   dim_head);
+
+        int cache_offset = 0;
+        const Tensor *pre_cache_kv_tensor = nullptr;
+        Tensor *pre_cache_kv_out_tmp = nullptr;
+        Tensor *src_mask_tmp = nullptr;
+        qkv_bias_add_transpose_split<T>(dev_ctx,
+                                        q_transpose_out_data,
+                                        kv_transpose_out_data,
+                                        qkv_out_data,
+                                        qkv_bias->data<T>(),
+                                        bsz,
+                                        num_head,
+                                        seq_len,
+                                        dim_head,
+                                        compute_bias);
+        fmha_compute.ComputeForwardWithoutTranspose(qkv_out,
+                                                    pre_cache_kv_tensor,
+                                                    src_mask,
+                                                    &q_transpose_out,
+                                                    &kv_transpose_out,
+                                                    pre_cache_kv_out_tmp,
+                                                    &qk_out,
+                                                    src_mask_tmp,
+                                                    &softmax_out,
+                                                    &attn_dropout_mask_out,
+                                                    &attn_dropout_out,
+                                                    &qktv_out,
+                                                    &fmha_out);
+        const T *k_ptr = nullptr;
+        const T *v_ptr = nullptr;
+
+        if (cache_offset > 0) {
+          // [2, bsz, num_head, cache_offset + seq_len, head_dim]
+          // const T *kv_data = pre_cache_kv_out.data<T>();
+          // k_ptr = kv_data;
+          // int64_t k_size = bsz * num_head * (seq_len + cache_offset) *
+          // dim_head; v_ptr = k_ptr + k_size;
+        } else {
+          // [3, bsz, num_head, seq_len, head_dim]
+          int64_t k_size = bsz * seq_len * num_head * dim_head;
+          const T *q_ptr = q_transpose_out_data;
+          k_ptr = kv_transpose_out_data;
+          v_ptr = k_ptr + k_size;
+        }
 
         // [2, bsz, num_head, max_seq_len, head_dim]
         int max_seq_len = cache_kv_out->dims()[3];
@@ -389,6 +472,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
         T *cache_k_ptr = cache_kv_data;
         T *cache_v_ptr = cache_kv_data + cache_k_size;
 
+        const int seq_len_tmp = seq_len + cache_offset;
         write_cache_kv<T>(dev_ctx,
                           cache_k_ptr,
                           cache_v_ptr,
@@ -396,7 +480,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
                           v_ptr,
                           bsz,
                           num_head,
-                          seq_len,
+                          seq_len_tmp,
                           max_seq_len,
                           dim_head);
       } else {  // not generation
@@ -428,7 +512,9 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
                                                  nullptr,
                                                  quant_round_type,
                                                  quant_max_bound,
-                                                 quant_min_bound);
+                                                 quant_min_bound,
+                                                 i,
+                                                 out_seq_len);
         AllReduce<int32_t>(output_workspace,
                            ring_id,
                            bsz * seq_len * num_head * dim_head,
@@ -503,7 +589,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
       // step6. ffn matmul1
 
       if (pre_layer_norm) {
-        // VLOG(0) << "cpp ffn1 int input: " << input_workspace;
+        VLOG(1) << "cpp ffn1 int input: " << input_workspace;
         ffn1_linear_compute.ComputeForwardINT8ToINT8(
             ffn1_weights[i],
             &input_workspace,
@@ -511,7 +597,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
             &output_workspace,
             nullptr,
             cublaslt_workspace.data<int8_t>());
-        // VLOG(0) << "cpp ffn1 int output: " << output_workspace;
+        VLOG(1) << "cpp ffn1 int output: " << output_workspace;
       } else {
         ffn1_linear_compute.ComputeForward(ffn1_weights[i],
                                            buf1,
@@ -561,7 +647,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
 
       // step8. ffn matmul2
       if (pre_layer_norm) {
-        // VLOG(0) << "cpp ffn2 int input: " << input_workspace;
+        VLOG(1) << "cpp ffn2 int input: " << input_workspace;
         ffn2_linear_compute.ComputeForwardINT8ToINT8(
             ffn2_weights[i],
             &input_workspace,
@@ -569,7 +655,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
             &output_workspace,
             nullptr,
             cublaslt_workspace.data<int8_t>());
-        // VLOG(0) << "cpp ffn2 int output: " << output_workspace;
+        VLOG(1) << "cpp ffn2 int output: " << output_workspace;
       } else {
         ffn2_linear_compute.ComputeForward(ffn2_weights[i],
                                            &ffn1_dropout_out,
@@ -659,6 +745,9 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
       if (pre_layer_norm) {
         x_data = buf1->data<T>();
       }
+      // if (i == 10)
+      // PADDLE_THROW(platform::errors::InvalidArgument(
+      //   "Stop for now"));
     }
   }
 };
