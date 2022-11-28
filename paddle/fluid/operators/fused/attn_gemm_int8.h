@@ -191,7 +191,7 @@ class AttnMatmulINT8 {
                                   dequant_out_scale->data<float>());
 
     VLOG(1) << "qkv float output: " << *output;
-    PrintMatrix(output->data<float>(),
+    PrintMatrix(output->data<T>(),
                 m_ * n_,
                 std::to_string(ts) + "_qkv_output_float_" + std::to_string(i));
 
@@ -226,7 +226,7 @@ class AttnMatmulINT8 {
                              int ts = 0) {
     VLOG(1) << "outlinear float input: " << *input;
     PrintMatrix(
-        input->data<float>(),
+        input->data<T>(),
         m_ * k_,
         std::to_string(ts) + "_outlinear_input_float_" + std::to_string(i));
     quantize_kernel_launcher<T>(input->data<T>(),
