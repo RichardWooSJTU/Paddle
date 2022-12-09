@@ -131,7 +131,7 @@ class DeQuantizeLinearKernel : public framework::OpKernel<T> {
     auto* out = context.Output<phi::DenseTensor>("Y");
     int bit_length = context.Attr<int>("bit_length");
     auto quant_axis = context.Attr<int>("quant_axis");
-    out->mutable_data<D>(dev_ctx.GetPlace());
+    dev_ctx.template Alloc<D>(out, out->numel() * sizeof(D));
 
     if (quant_axis < 0) {
       float max_range = (std::pow(2, bit_length - 1) - 1);
@@ -155,7 +155,6 @@ class DeQuantizeLinearKernel : public framework::OpKernel<T> {
   }
 
   void Compute(const framework::ExecutionContext& context) const override {
-    auto* out = context.Output<phi::DenseTensor>("Y");
     auto* scale = context.Input<phi::DenseTensor>("Scale");
     switch (scale->dtype()) {
       case experimental::DataType::FLOAT64:
@@ -166,6 +165,12 @@ class DeQuantizeLinearKernel : public framework::OpKernel<T> {
         break;
       case experimental::DataType::FLOAT16:
         ComputeImpl<paddle::platform::float16>(context);
+        break;
+      default:
+        PADDLE_THROW(platform::errors::Unimplemented(
+            "In DeQuantizeLinearKernel, "
+            "data type %d for scale/output is not supported ",
+            scale->dtype()));
         break;
     }
   }
