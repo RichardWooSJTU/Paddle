@@ -93,7 +93,7 @@ using float16 = plat::float16;
 #define MMHA_USE_FP32_ACUM_FOR_LOGITS
 #define MMHA_USE_FP32_ACUM_FOR_OUT
 #define MMHA_USE_FP32_ACUM_FOR_FMA
-// #define MMHA_USE_HMMA_FOR_REDUCTION
+#define MMHA_USE_HMMA_FOR_REDUCTION
 
 template <typename D>
 class PDDataTypeTraits;
@@ -599,8 +599,7 @@ template <int N>
 inline __device__ float qk_hmma_dot_(const uint32_t (&q)[N],
                                      const uint32_t (&k)[N],
                                      float inv_sqrt_dh) {
-#if defined(MMHA_USE_HMMA_FOR_REDUCTION) && defined(__CUDA_ARCH__) && \
-    __CUDA_ARCH__ >= 750
+#if defined(MMHA_USE_HMMA_FOR_REDUCTION)
 #ifdef MMHA_USE_FP32_ACUM_FOR_FMA
   using K_vec_acum = typename K_vec_acum_fp32_<uint32_t>::Type;
 #else
@@ -640,8 +639,7 @@ struct Qk_dot<float16, 4> {
   static inline __device__ float dot(const uint32_t (&q)[N],
                                      const uint32_t (&k)[N],
                                      float inv_sqrt_dh) {
-#if defined(MMHA_USE_HMMA_FOR_REDUCTION) && defined(__CUDA_ARCH__) && \
-    __CUDA_ARCH__ >= 750
+#if defined(MMHA_USE_HMMA_FOR_REDUCTION)
     return qk_hmma_dot_(q, k, inv_sqrt_dh);
 #else
     return qk_dot_<4>(q, k, inv_sqrt_dh);
@@ -1104,8 +1102,7 @@ void fmha_launch_kernel(const Masked_multihead_attention_params<T> &params,
   if (params.timestep < 32) {
     MMHA_LAUNCH_KERNEL(T, Dh, Dh_MAX, 4, THREADS_PER_VALUE, 64, stream);
   } else if (params.timestep < 2048) {
-#if defined(MMHA_USE_HMMA_FOR_REDUCTION) && defined(__CUDA_ARCH__) && \
-    __CUDA_ARCH__ >= 750
+#if defined(MMHA_USE_HMMA_FOR_REDUCTION)
     MMHA_LAUNCH_KERNEL(T, Dh, Dh_MAX, 4, THREADS_PER_VALUE, 256, stream);
 #else
     MMHA_LAUNCH_KERNEL(T, Dh, Dh_MAX, 2, THREADS_PER_VALUE, 128, stream);

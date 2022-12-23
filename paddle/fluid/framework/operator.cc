@@ -1867,18 +1867,19 @@ void OperatorWithKernel::RunImpl(const Scope& scope,
   // TODO(panyx0718): ExecutionContext should only depend on RuntimeContext
   // not Scope. Imperative mode only pass inputs and get outputs.
   {
-    platform::RecordEvent record_event("compute",
-                                       platform::TracerEventType::OperatorInner,
-                                       1,
-                                       platform::EventRole::kInnerOp);
     if (run_phi_kernel_) {
+      platform::RecordEvent record_event(
+          "RunPhiKernel",
+          platform::TracerEventType::OperatorInner,
+          1,
+          platform::EventRole::kInnerOp);
       phi::KernelContext phi_kernel_context;
       if (enable_cache_runtime_context_ && !need_prepare_phi_data_ &&
           !need_prepare_data_) {
         // TODO(inference): Now we only suppor dense_tensor cache, we may be
         // support ScalarTensor, SparseTensor in future.
         bool all_dense_tensor_input_{true};
-        for (auto& iter : Inputs()) {
+        ` for (auto& iter : Inputs()) {
           for (auto& name : iter.second) {
             all_dense_tensor_input_ &=
                 scope.FindVar(name)->IsType<phi::DenseTensor>();
@@ -1910,6 +1911,11 @@ void OperatorWithKernel::RunImpl(const Scope& scope,
         (*phi_kernel_)(&phi_kernel_context);
       }
     } else {
+      platform::RecordEvent record_event(
+          "RunFluidKernel",
+          platform::TracerEventType::OperatorInner,
+          1,
+          platform::EventRole::kInnerOp);
       (*kernel_func_)(
           ExecutionContext(*this, exec_scope, *dev_ctx, *runtime_ctx));
     }
