@@ -2945,6 +2945,10 @@ void MoeInferMeta(const MetaTensor& x,
   out->set_layout(x.layout());
 }
 
+void ErnieForInferenceInferMeta(const MetaTensor& x,
+                                MetaTensor* scores,
+                                MetaTensor* indices) {}
+
 }  // namespace phi
 
 PD_REGISTER_INFER_META_FN(batch_norm_infer, phi::BatchNormInferInferMeta);

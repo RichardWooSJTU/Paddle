@@ -532,4 +532,7 @@ void MoeInferMeta(const MetaTensor& x,
                   const std::string& act_type,
                   MetaTensor* out);
 
+void ErnieForInferenceInferMeta(const MetaTensor& x MetaTensor* scores,
+                                MetaTensor* indices);
+
 }  // namespace phi

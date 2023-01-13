@@ -346,6 +346,14 @@
   inplace : (x -> out)
   backward : erfinv_grad
 
+- op : ernie_for_inference
+  args : (Tensor x)
+  output : Tensor(scores), Tensor(indices)
+  infer_meta :
+    func : ErnieForInferenceInferMeta
+  kernel :
+    func : ErnieForInference
+
 - op : exp
   args : (Tensor x)
   output : Tensor(out)
