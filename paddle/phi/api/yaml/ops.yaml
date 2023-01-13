@@ -347,7 +347,7 @@
   backward : erfinv_grad
 
 - op : ernie_for_inference
-  args : (Tensor x)
+  args : (Tensor src_ids, Tensor pos_ids, Tensor input_mask, Tensor pos_ids_extra, Tensor tgt_ids, Tensor tgt_pos, Tensor tgt_pos_extra, Tensor init_score, Tensor tgt_mask, Tensor max_dec_len, Tensor min_dec_len, Tensor topk, Tensor topp, str decoding_strategy)
   output : Tensor(scores), Tensor(indices)
   infer_meta :
     func : ErnieForInferenceInferMeta

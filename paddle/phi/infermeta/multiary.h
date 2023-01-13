@@ -532,7 +532,38 @@ void MoeInferMeta(const MetaTensor& x,
                   const std::string& act_type,
                   MetaTensor* out);
 
-void ErnieForInferenceInferMeta(const MetaTensor& x MetaTensor* scores,
-                                MetaTensor* indices);
+(Tensor src_ids,
+ Tensor pos_ids,
+ Tensor input_mask,
+ Tensor pos_ids_extra,
+ Tensor tgt_ids,
+ Tensor tgt_pos,
+ Tensor tgt_pos_extra,
+ Tensor init_score,
+ Tensor tgt_mask,
+ Tensor max_dec_len,
+ Tensor min_dec_len,
+ Tensor topk,
+ Tensor topp,
+ bool decoding_strategy)
+
+    void ErnieForInferenceInferMeta(const MetaTensor& src_ids,
+                                    const MetaTensor& pos_ids,
+                                    const MetaTensor& input_mask,
+                                    const MetaTensor& pos_ids_extra,
+                                    const MetaTensor& tgt_ids,
+                                    const MetaTensor& tgt_pos,
+                                    const MetaTensor& tgt_pos_extra,
+                                    const MetaTensor& init_score,
+                                    const MetaTensor& tgt_mask,
+                                    const MetaTensor& max_dec_len,
+                                    const MetaTensor& min_dec_len,
+                                    const MetaTensor& topk,
+                                    const MetaTensor& topp,
+                                    const MetaTensor& topk,
+                                    bool decoding_strategy,
+                                    ,
+                                    MetaTensor* scores,
+                                    MetaTensor* indices);
 
 }  // namespace phi

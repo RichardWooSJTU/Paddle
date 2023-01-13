@@ -21,7 +21,21 @@ namespace phi {
 
 template <typename T, typename Context>
 void ErnieForInferenceKernel(const Context& ctx,
-                             const DenseTensor& x,
+                             const DenseTensor& src_ids,
+                             const DenseTensor& pos_ids,
+                             const DenseTensor& input_mask,
+                             const DenseTensor& pos_ids_extra,
+                             const DenseTensor& tgt_ids,
+                             const DenseTensor& tgt_pos,
+                             const DenseTensor& tgt_pos_extra,
+                             const DenseTensor& init_score,
+                             const DenseTensor& tgt_mask,
+                             const DenseTensor& max_dec_len,
+                             const DenseTensor& min_dec_len,
+                             const DenseTensor& topk,
+                             const DenseTensor& topp,
+                             const DenseTensor& topk,
+                             bool decoding_strategy,
                              DenseTensor* scores,
                              DenseTensor* indices);
 

@@ -2945,9 +2945,31 @@ void MoeInferMeta(const MetaTensor& x,
   out->set_layout(x.layout());
 }
 
-void ErnieForInferenceInferMeta(const MetaTensor& x,
+void ErnieForInferenceInferMeta(const MetaTensor& src_ids,
+                                const MetaTensor& pos_ids,
+                                const MetaTensor& input_mask,
+                                const MetaTensor& pos_ids_extra,
+                                const MetaTensor& tgt_ids,
+                                const MetaTensor& tgt_pos,
+                                const MetaTensor& tgt_pos_extra,
+                                const MetaTensor& init_score,
+                                const MetaTensor& tgt_mask,
+                                const MetaTensor& max_dec_len,
+                                const MetaTensor& min_dec_len,
+                                const MetaTensor& topk,
+                                const MetaTensor& topp,
+                                const MetaTensor& topk,
+                                bool decoding_strategy,
                                 MetaTensor* scores,
-                                MetaTensor* indices) {}
+                                MetaTensor* indices) {
+  int batch_size = src_ids.dims()[0];
+  auto out_dims = phi::make_ddim(std::vector<int>{batch_size, -1});
+  scores->set_dims(out_dims);
+  indices->set_dims(out_dims);
+
+  scores->set_dtype(init_score.dtype());
+  indices->set_dtype(src_ids.dtype());
+}
 
 }  // namespace phi
 
