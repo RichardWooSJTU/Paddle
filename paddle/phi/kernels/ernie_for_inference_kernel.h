@@ -35,6 +35,7 @@ void ErnieForInferenceKernel(const Context& ctx,
                              const DenseTensor& topk,
                              const DenseTensor& topp,
                              const DenseTensor& topk,
+                             const std::vector<DenseTensor>& embedding_weight,
                              bool decoding_strategy,
                              DenseTensor* scores,
                              DenseTensor* indices);
