@@ -20,25 +20,10 @@
 namespace phi {
 
 template <typename T, typename Context>
-void ErnieForInferenceKernel(
-    const Context& ctx,
-    const DenseTensor& src_ids,
-    const DenseTensor& pos_ids,
-    const DenseTensor& input_mask,
-    const DenseTensor& pos_ids_extra,
-    const DenseTensor& tgt_ids,
-    const DenseTensor& tgt_pos,
-    const DenseTensor& tgt_pos_extra,
-    const DenseTensor& init_score,
-    const DenseTensor& tgt_mask,
-    const DenseTensor& max_dec_len,
-    const DenseTensor& min_dec_len,
-    const DenseTensor& topk,
-    const DenseTensor& topp,
-    const DenseTensor& topk,
-    const std::vector<const DenseTensor*>& embedding_weight,
-    bool decoding_strategy,
-    DenseTensor* scores,
-    DenseTensor* indices);
-
+void TopKSamplingKernel(const Context& ctx,
+                        const DenseTensor& probs,
+                        int k,
+                        int random_seed,
+                        DenseTensor* topk_scores,
+                        DenseTensor* topk_indices);
 }  // namespace phi
