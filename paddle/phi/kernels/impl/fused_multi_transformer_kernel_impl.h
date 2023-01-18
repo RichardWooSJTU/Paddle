@@ -12,14 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "paddle/phi/kernels/fused_multi_transformer_kernel.h"
 #include "paddle/fluid/operators/fused/fused_multi_transformer_op.cu.h"
+#include "paddle/phi/kernels/fused_multi_transformer_kernel.h"
 
 #include <vector>
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/core/dense_tensor.h"
 #include "paddle/phi/core/kernel_registry.h"
 
+// #define _DEBUG_FUSED_MULTI_TRANSFORMER
+
+#pragma once
 namespace phi {
 
 template <typename T, typename Context>
@@ -29,31 +32,31 @@ void FusedMultiTransformerKernel(
     const DenseTensor &src_mask,
     const std::vector<const DenseTensor *> &qkv_weights,
     const std::vector<const DenseTensor *> &qkv_biases,
-    const std::vector<const DenseTensor *> &out_linear_weighta,
+    const std::vector<const DenseTensor *> &out_linear_weights,
     const std::vector<const DenseTensor *> &out_linear_biases,
     const std::vector<const DenseTensor *> &ffn1_weights,
     const std::vector<const DenseTensor *> &ffn1_biases,
     const std::vector<const DenseTensor *> &ffn2_weights,
     const std::vector<const DenseTensor *> &ffn2_biases,
     const std::vector<const DenseTensor *> &ln_scales,
-    const std::vector<const DenseTensor *> &ln_biass,
+    const std::vector<const DenseTensor *> &ln_biases,
     const std::vector<const DenseTensor *> &ffn_ln_scales,
     const std::vector<const DenseTensor *> &ffn_ln_biases,
     int time_step,
     bool pre_layer_norm,
     float epsilon,
+    std::string act_method,
     DenseTensor *out,
     std::vector<DenseTensor *> cache_kvs) {
-  using U = LayerNormParamType<T>;
+  VLOG(1) << "ffn2_weights[" << 0 << "]: " << *ffn2_weights[0];
+  using U = paddle::operators::LayerNormParamType<T>;
   // 0. input/out
   const auto input_x_dims = x.dims();
   int bsz = input_x_dims[0];
   int seq_len = input_x_dims[1];
   int dim_embed = input_x_dims[2];
   int bsz_seq = bsz * seq_len;
-  const std::string act_method = ctx.Attr<std::string>("act_method");
 
-  out->Resize({{bsz, seq_len, dim_embed}});
   ctx.template Alloc<T>(out);
 
   // 1. layer norm
@@ -61,22 +64,22 @@ void FusedMultiTransformerKernel(
       paddle::operators::AttnLayerNorm<T>(ctx, epsilon, bsz_seq, dim_embed);
   DenseTensor ln_mean, ln_var;
   ln_mean.Resize({{bsz_seq}});
-  auto *ln_mean_data = ctx.Alloc<U>(&ln_mean, ln_mean.numel() * sizeof(U));
+  auto *ln_mean_data = ctx.template Alloc<U>(&ln_mean);
   ln_var.Resize({{bsz_seq}});
-  auto *ln_var_data = ctx.Alloc<U>(&ln_var, ln_var.numel() * sizeof(U));
+  auto *ln_var_data = ctx.template Alloc<U>(&ln_var);
 
   // 2. qkv
   // x: qkv's input [batch_size, seq_len, dim_embed]
   // y: qkv's weight: [3, num_head, dim_head, dim_embed]
   const bool trans_qkvw = true;
-  const auto qkv_w_dims = qkv_weights[0].dims();
+  const auto qkv_w_dims = qkv_weights[0]->dims();
   int num_head = trans_qkvw ? qkv_w_dims[1] : qkv_w_dims[2];
   int dim_head = trans_qkvw ? qkv_w_dims[2] : qkv_w_dims[3];
   int hidden_size = num_head * dim_head;
   int output_size = 3 * hidden_size;
   int input_size = dim_embed;
 
-  bool compute_bias = qkv_biases.size() > 0 && time_step == nullptr;
+  bool compute_bias = qkv_biases.size() > 0 && time_step == -1;
   // (transA, transB, compute_bias) = (false, trans_qkvw, false)
   // Since we fused QKVBias into QKVBiasAddTransposeSplit kernel, here we
   // set compute_bias as false.
@@ -91,7 +94,7 @@ void FusedMultiTransformerKernel(
   DenseTensor qkv_out;
   qkv_out.Resize({{bsz, seq_len, 3, num_head, dim_head}});
 
-  auto *qkv_out_data = ctx.Alloc<T>(&qkv_out, qkv_out.numel() * sizeof(T));
+  auto *qkv_out_data = ctx.template Alloc<T>(&qkv_out);
 
   // 3. fmha
   paddle::operators::AttnDropoutParam attn_param(
@@ -103,7 +106,7 @@ void FusedMultiTransformerKernel(
   std::vector<DenseTensor> pre_caches;
   int cache_offset = 0;
   if (pre_caches.size() > 0) {
-    cache_offset = pre_caches[0]->dims()[3];
+    cache_offset = pre_caches[0].dims()[3];
   }
 
   auto out_seq_len = seq_len;
@@ -111,12 +114,12 @@ void FusedMultiTransformerKernel(
     PADDLE_ENFORCE_GT(
         time_step,
         0,
-        platform::errors::PreconditionNotMet(
+        paddle::platform::errors::PreconditionNotMet(
             "The value of time_step must > 0, but now is %d", time_step));
     PADDLE_ENFORCE_EQ(
         seq_len,
         1,
-        platform::errors::PreconditionNotMet(
+        paddle::platform::errors::PreconditionNotMet(
             "In decode stage, the seq_len of input must be 1, but now is %d",
             seq_len));
     out_seq_len += time_step;
@@ -126,21 +129,18 @@ void FusedMultiTransformerKernel(
 
   DenseTensor q_transpose_out, kv_transpose_out, qk_out;
   q_transpose_out.Resize({{bsz, num_head, seq_len, dim_head}});
-  auto *q_transpose_out_data =
-      ctx.Alloc<T>(&q_transpose_out, q_transpose_out.numel() * sizeof(T));
+  auto *q_transpose_out_data = ctx.template Alloc<T>(&q_transpose_out);
 
   kv_transpose_out.Resize({{2, bsz, num_head, seq_len, dim_head}});
-  auto *kv_transpose_out_data =
-      ctx.Alloc<T>(&kv_transpose_out, kv_transpose_out.numel() * sizeof(T));
+  auto *kv_transpose_out_data = ctx.template Alloc<T>(&kv_transpose_out);
 
   qk_out.Resize({{bsz, num_head, seq_len, out_seq_len}});
-  auto *qk_out_data = ctx.Alloc<T>(&qk_out, qk_out.numel() * sizeof(T));
+  auto *qk_out_data = ctx.template Alloc<T>(&qk_out);
 
   DenseTensor src_mask_out;
   if (cache_offset > 0) {
     src_mask_out.Resize({{bsz, num_head, seq_len, out_seq_len}});
-    auto *src_mask_out_data =
-        ctx.Alloc<T>(&src_mask_out, src_mask_out.numel() * sizeof(T));
+    auto *src_mask_out_data = ctx.template Alloc<T>(&src_mask_out);
   }
 
   // [2, bs, num_head, cache_seq_len + seq_len, head_dim]
@@ -148,31 +148,28 @@ void FusedMultiTransformerKernel(
   if (cache_offset > 0) {
     pre_cache_kv_out.Resize(
         {{2, bsz, num_head, seq_len + cache_offset, dim_head}});
-    auto *pre_cache_kv_out_data =
-        ctx.Alloc<T>(&pre_cache_kv_out, pre_cache_kv_out.numel() * sizeof(T));
+    auto *pre_cache_kv_out_data = ctx.template Alloc<T>(&pre_cache_kv_out);
   }
 
   DenseTensor softmax_out;
   DenseTensor attn_dropout_mask_out, attn_dropout_out;
   DenseTensor qktv_out, fmha_out;
   softmax_out.Resize({{bsz, num_head, seq_len, out_seq_len}});
-  auto *softmax_out_data =
-      ctx.Alloc<T>(&softmax_out, softmax_out.numel() * sizeof(T));
+  auto *softmax_out_data = ctx.template Alloc<T>(&softmax_out);
 
   attn_dropout_mask_out.Resize({{bsz, num_head, seq_len, out_seq_len}});
-  auto *attn_dropout_mask_out_data = ctx.Alloc<T>(
-      &attn_dropout_mask_out, attn_dropout_mask_out.numel() * sizeof(T));
+  auto *attn_dropout_mask_out_data =
+      ctx.template Alloc<T>(&attn_dropout_mask_out);
   attn_dropout_out.Resize({{bsz, num_head, seq_len, out_seq_len}});
-  auto *attn_dropout_data_data =
-      ctx.Alloc<T>(&attn_dropout_out, attn_dropout_out.numel() * sizeof(T));
+  auto *attn_dropout_data_data = ctx.template Alloc<T>(&attn_dropout_out);
 
   qktv_out.Resize({{bsz, num_head, seq_len, dim_head}});
-  auto *qktv_out_data = ctx.Alloc<T>(&qktv_out, qktv_out.numel() * sizeof(T));
+  auto *qktv_out_data = ctx.template Alloc<T>(&qktv_out);
   fmha_out.Resize({{bsz, seq_len, num_head, dim_head}});
-  auto *fmha_out_data = ctx.Alloc<T>(&fmha_out, fmha_out.numel() * sizeof(T));
+  auto *fmha_out_data = ctx.template Alloc<T>(&fmha_out);
 
   // 4. out_linear
-  int ring_id = 0;  // TODO(@wufeisheng): Need as input
+  int ring_id = -1;  // TODO(@wufeisheng): Need as input
   // (transA, transB, compute_bias) = (false, false, false)
   auto out_linear_compute = paddle::operators::AttnMatMul<T>(
       ctx, false, false, bsz_seq, dim_embed, hidden_size, false);
@@ -188,22 +185,20 @@ void FusedMultiTransformerKernel(
   if (pre_layer_norm) {
     bias_dropout_residual_out.Resize({{bsz, seq_len, dim_embed}});
     bias_dropout_residual_out_data =
-        ctx.Alloc<T>(&bias_dropout_residual_out,
-                     bias_dropout_residual_out.numel() * sizeof(T));
+        ctx.template Alloc<T>(&bias_dropout_residual_out);
   }
   dropout_mask_out.Resize({{bsz, seq_len, dim_embed}});
-  auto *dropout_mask_out_data = ctx.Alloc<uint8_t>(
-      &dropout_mask_out, dropout_mask_out.numel() * sizeof(uint8_t));
+  auto *dropout_mask_out_data = ctx.template Alloc<uint8_t>(&dropout_mask_out);
 
   // 6. ffn matmul1
-  auto ffn1_weight_dim = ffn1_weights[0].dims();
+  auto ffn1_weight_dim = ffn1_weights[0]->dims();
 
   int dim_ffn = ffn1_weight_dim[1];
   auto ffn1_linear_compute = paddle::operators::AttnMatMul<T>(
       ctx, false, false, bsz_seq, dim_ffn, dim_embed, false);
   DenseTensor ffn1_out;
   ffn1_out.Resize({{bsz_seq, dim_ffn}});
-  auto *ffn1_out_data = ctx.Alloc<T>(&ffn1_out, ffn1_out.numel() * sizeof(T));
+  auto *ffn1_out_data = ctx.template Alloc<T>(&ffn1_out);
 
   // 7. ffn act + bias
   paddle::operators::DropoutParam ffn1_dropout_param(
@@ -212,11 +207,10 @@ void FusedMultiTransformerKernel(
       ctx, bsz_seq, dim_ffn, ffn1_dropout_param);
   DenseTensor ffn1_dropout_out, ffn1_dropout_mask;
   ffn1_dropout_out.Resize({{bsz_seq, dim_ffn}});
-  auto *ffn1_dropout_out_data =
-      ctx.Alloc<T>(&ffn1_dropout_out, ffn1_dropout_out.numel() * sizeof(T));
+  auto *ffn1_dropout_out_data = ctx.template Alloc<T>(&ffn1_dropout_out);
   ffn1_dropout_mask.Resize({{bsz_seq, dim_ffn}});
-  auto *ffn1_dropout_mask_data = ctx.Alloc<uint8_t>(
-      &ffn1_dropout_mask, ffn1_dropout_mask.numel() * sizeof(uint8_t));
+  auto *ffn1_dropout_mask_data =
+      ctx.template Alloc<uint8_t>(&ffn1_dropout_mask);
 
   // 8. ffn2 matmul
   auto ffn2_linear_compute = paddle::operators::AttnMatMul<T>(
@@ -230,15 +224,16 @@ void FusedMultiTransformerKernel(
           ctx, bsz_seq, dim_embed, ffn2_dropout_param, epsilon);
 
   // calc
-  auto *from_data = ctx.Alloc<T>(out, out->numel() * sizeof(T));
+  auto *from_data = ctx.template Alloc<T>(out);
   DenseTensor *from_tensor = out;
   DenseTensor tmp_out;
   tmp_out.Resize({{bsz, seq_len, dim_embed}});
-  auto *tmp_out_data = ctx.Alloc<T>(&tmp_out, tmp_out.numel() * sizeof(T));
+  auto *tmp_out_data = ctx.template Alloc<T>(&tmp_out);
 
   auto *x_data = x.data<T>();
   DenseTensor *buf0 = nullptr;
   DenseTensor *buf1 = nullptr;
+  VLOG(1) << "ffn2_weights[" << 0 << "]: " << *ffn2_weights[0];
 
   // step0:  x   --> buf1
   // step1: buf1 --> buf0
@@ -262,8 +257,8 @@ void FusedMultiTransformerKernel(
   for (int i = 0; i < layers; ++i) {
     // step1. layer_norm
     if (i == 0 && pre_layer_norm) {
-      auto *ln_scale_data = ln_scales[i].data<U>();
-      auto *ln_bias_data = ln_biases[i].data<U>();
+      auto *ln_scale_data = ln_scales[i]->data<U>();
+      auto *ln_bias_data = ln_biases[i]->data<U>();
       // TODO(wangxi): can remove mean var in inference
       ln_compute.ComputeForward(x_data,
                                 ln_scale_data,
@@ -274,29 +269,30 @@ void FusedMultiTransformerKernel(
     }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
     VLOG(0) << "step1";
+    VLOG(1) << "ffn2_weights[" << i << "]: " << *ffn2_weights[i];
 #endif
 
     // step2. qkv
     const DenseTensor *qkv_bias =
-        qkv_biases.size() > 0 ? &qkv_biases[i] : nullptr;
+        qkv_biases.size() > 0 ? qkv_biases[i] : nullptr;
     // NOTE: in decoder stage, bias is fused in fmha
-    const DenseTensor *bias = time_step ? nullptr : qkv_bias;
+    const DenseTensor *bias = time_step > 0 ? nullptr : qkv_bias;
     if (!pre_layer_norm && i == 0) {
-      qkv_compute.ComputeForward(qkv_weights[i], x, bias, &qkv_out, &qkv_out);
+      qkv_compute.ComputeForward(qkv_weights[i], &x, bias, &qkv_out, &qkv_out);
     } else {
       qkv_compute.ComputeForward(
           qkv_weights[i], buf1, bias, &qkv_out, &qkv_out);
     }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
     VLOG(0) << "step2";
+    VLOG(1) << "ffn2_weights[" << i << "]: " << *ffn2_weights[i];
 #endif
 
     // step3. fmha
-    const DenseTensor *cache_kv =
-        cache_kvs.size() > 0 ? &cache_kvs[i] : nullptr;
-    DenseTensor *cache_kv_out = cache_kv ? &cache_kv_outs[i] : nullptr;
+    const DenseTensor *cache_kv = cache_kvs.size() > 0 ? cache_kvs[i] : nullptr;
+    DenseTensor *cache_kv_out = cache_kv ? cache_kv_outs[i] : nullptr;
 
-    if (time_step) {  // generation decoder stage
+    if (time_step > 0) {  // generation decoder stage
       // [2, batch_size, num_head, max_seq_len, head_size]
       int max_seq_len = cache_kv->dims()[3];
       paddle::operators::fmha<T>(ctx,
@@ -309,11 +305,11 @@ void FusedMultiTransformerKernel(
                                  max_seq_len,
                                  num_head,
                                  dim_head,
-                                 time_step->data<int>()[0],
+                                 time_step,
                                  1. / sqrt(dim_head));
     } else if (cache_kv_out) {  // generation context stage
       const DenseTensor *pre_cache_kv_tensor =
-          pre_caches.size() > 0 ? pre_caches[i] : nullptr;
+          pre_caches.size() > 0 ? &pre_caches[i] : nullptr;
       DenseTensor *pre_cache_kv_out_tmp =
           cache_offset > 0 ? &pre_cache_kv_out : nullptr;
       DenseTensor *src_mask_tmp = cache_offset > 0 ? &src_mask_out : nullptr;
@@ -329,7 +325,7 @@ void FusedMultiTransformerKernel(
                                                          compute_bias);
       fmha_compute.ComputeForwardWithoutTranspose(qkv_out,
                                                   pre_cache_kv_tensor,
-                                                  src_mask,
+                                                  &src_mask,
                                                   &q_transpose_out,
                                                   &kv_transpose_out,
                                                   pre_cache_kv_out_tmp,
@@ -390,7 +386,7 @@ void FusedMultiTransformerKernel(
                                                          compute_bias);
       fmha_compute.ComputeForwardWithoutTranspose(qkv_out,
                                                   cache_kv,
-                                                  src_mask,
+                                                  &src_mask,
                                                   &q_transpose_out,
                                                   &kv_transpose_out,
                                                   cache_kv_out,
@@ -404,26 +400,28 @@ void FusedMultiTransformerKernel(
     }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
     VLOG(0) << "step3";
+    VLOG(1) << "ffn2_weights[" << i << "]: " << *ffn2_weights[i];
 #endif
 
     if (pre_layer_norm) {
       out_linear_compute.ComputeForward(
-          &out_linear_weights[i], &fmha_out, nullptr, buf1, nullptr);
-      AllReduce<T>(*buf1, ring_id, buf1->numel(), ctx);
+          out_linear_weights[i], &fmha_out, nullptr, buf1, nullptr);
+      paddle::operators::AllReduce<T>(*buf1, ring_id, buf1->numel(), ctx);
     } else {
       out_linear_compute.ComputeForward(
-          &out_linear_weights[i], &fmha_out, nullptr, buf0, nullptr);
-      AllReduce<T>(*buf0, ring_id, buf0->numel(), ctx);
+          out_linear_weights[i], &fmha_out, nullptr, buf0, nullptr);
+      paddle::operators::AllReduce<T>(*buf0, ring_id, buf0->numel(), ctx);
     }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
     VLOG(0) << "step4";
+    VLOG(1) << "ffn2_weights[" << i << "]: " << *ffn2_weights[i];
 #endif
 
     // step5. ln(residual + dropout(input + bias))
     if (pre_layer_norm) {
-      auto *ln_scale_data = ffn_ln_scales[i].data<U>();
-      auto *ln_bias_data = ffn_ln_biases[i].data<U>();
-      auto *out_linear_bias_data = out_linear_biases[i].data<T>();
+      auto *ln_scale_data = ffn_ln_scales[i]->data<U>();
+      auto *ln_bias_data = ffn_ln_biases[i]->data<U>();
+      auto *out_linear_bias_data = out_linear_biases[i]->data<T>();
 
       // inplace
       fused_dropout_layernorm_helper.LayernormResidualDropoutBias(
@@ -439,7 +437,7 @@ void FusedMultiTransformerKernel(
           ln_mean_data,
           ln_var_data);
     } else {
-      auto *ln_scale_data = ln_scales[i].data<U>();
+      auto *ln_scale_data = ln_scales[i]->data<U>();
       auto *ln_bias_data = ln_biases[i]->data<U>();
       auto *out_linear_bias_data = out_linear_biases[i]->data<T>();
       auto *residual_data = (i == 0 ? x_data : buf1->data<T>());
@@ -458,6 +456,7 @@ void FusedMultiTransformerKernel(
     }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
     VLOG(0) << "step5";
+    VLOG(1) << "ffn1_weights[" << i << "]: " << *ffn1_weights[i];
 #endif
 
     // step6. ffn matmul1
@@ -477,6 +476,8 @@ void FusedMultiTransformerKernel(
                                             ffn1_dropout_mask_data);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
     VLOG(0) << "step7";
+    VLOG(1) << "ffn2_weights[" << i << "]: " << *ffn2_weights[i];
+    VLOG(1) << "ffn1_dropout_out" << ffn1_dropout_out;
 #endif
 
     // step8. ffn matmul2
@@ -492,9 +493,9 @@ void FusedMultiTransformerKernel(
 #endif
 
     if (pre_layer_norm) {
-      AllReduce<T>(*buf1, ring_id, buf1->numel(), ctx);
+      paddle::operators::AllReduce<T>(*buf1, ring_id, buf1->numel(), ctx);
     } else {
-      AllReduce<T>(*buf0, ring_id, buf0->numel(), ctx);
+      paddle::operators::AllReduce<T>(*buf0, ring_id, buf0->numel(), ctx);
     }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
     VLOG(0) << "step8.1";

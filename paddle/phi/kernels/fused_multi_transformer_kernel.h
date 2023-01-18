@@ -33,12 +33,13 @@ void FusedMultiTransformerKernel(
     const std::vector<const DenseTensor *> &ffn2_weights,
     const std::vector<const DenseTensor *> &ffn2_biases,
     const std::vector<const DenseTensor *> &ln_scales,
-    const std::vector<const DenseTensor *> &ln_biass,
+    const std::vector<const DenseTensor *> &ln_biases,
     const std::vector<const DenseTensor *> &ffn_ln_scales,
     const std::vector<const DenseTensor *> &ffn_ln_biases,
     int time_step,
     bool pre_layer_norm,
     float epsilon,
+    std::string act_method,
     DenseTensor *out,
     std::vector<DenseTensor *> cache_kvs);
 

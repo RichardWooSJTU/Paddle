@@ -24,11 +24,16 @@
 #include "paddle/phi/kernels/concat_kernel.h"
 #include "paddle/phi/kernels/embedding_kernel.h"
 #include "paddle/phi/kernels/full_kernel.h"
+#include "paddle/phi/kernels/funcs/blas/blas.h"
 #include "paddle/phi/kernels/funcs/broadcast_function.h"
 #include "paddle/phi/kernels/funcs/elementwise_functor.h"
-#include "paddle/phi/kernels/fused_multi_transformer_kernel.h"
+#include "paddle/phi/kernels/gpudnn/softmax_gpudnn.h"
+#include "paddle/phi/kernels/impl/fused_multi_transformer_kernel_impl.h"
+#include "paddle/phi/kernels/impl/topk_sampling_kernel_impl.h"
 #include "paddle/phi/kernels/layer_norm_kernel.h"
+#include "paddle/phi/kernels/scale_kernel.h"
 #include "paddle/phi/kernels/softmax_kernel.h"
+#include "paddle/phi/kernels/stack_kernel.h"
 
 namespace phi {
 
@@ -39,9 +44,16 @@ __global__ void LogAdd(T* data, const T* add_data, const int num) {
   int stride = blockDim.x * gridDim.x;
   for (; tid < num; tid += stride) {
     auto tmp = log(static_cast<float>(data[tid]));
-    data[tid] = tmp + add_data[tid];
+    data[tid] = static_cast<T>(tmp) + add_data[tid];
   }
 #endif
+}
+
+template <typename T>
+inline __device__ T gelu(const T x) {
+  // actual gelu with approximation = false
+  float tmp = static_cast<float>(x);
+  return static_cast<T>(tmp * normcdf(tmp));
 }
 
 template <typename T>
@@ -58,6 +70,13 @@ __global__ void BiasGelu(T* data, const T* bias, const int num, const int k) {
   }
 #endif
 }
+
+template <typename T>
+struct AddThreeFunctor {
+  inline HOSTDEVICE T operator()(const T a, const T b, const T c) const {
+    return a + b + c;
+  }
+};
 
 inline int GetDesiredBlockDim(int block_dim) {
   if (block_dim <= 64) {
@@ -91,22 +110,30 @@ void ErnieEmbedding(const Context& ctx,
                     const DenseTensor& pos_ids_extra,
                     const std::vector<const DenseTensor*>& embedding_weight,
                     DenseTensor* emb_out) {
+  auto input_dims = src_ids.dims();
+  int bsz = input_dims[0];
+  int input_seq_len = input_dims[1];
+  int dim_embed = embedding_weight[0]->dims()[1];
+
   DenseTensor word_emb_out, pos_embed_out, pos_extra_embed_out;
-  emb_out->Resize({{bsz, input_seq_len, dim_embed}});
+  word_emb_out.Resize({{bsz, input_seq_len, dim_embed}});
+  pos_embed_out.Resize({{bsz, input_seq_len, dim_embed}});
+  pos_extra_embed_out.Resize({{bsz, input_seq_len, dim_embed}});
+
   ctx.template Alloc<T>(emb_out);
 
   EmbeddingKernel<T, Context>(
-      ctx, src_ids, embedding_weight[0], -1, word_emb_out);
+      ctx, src_ids, *embedding_weight[0], -1, &word_emb_out);
   EmbeddingKernel<T, Context>(
-      ctx, pos_ids, embedding_weight[1], -1, &pos_embed_out);
+      ctx, pos_ids, *embedding_weight[1], -1, &pos_embed_out);
   EmbeddingKernel<T, Context>(
-      ctx, pos_ids_extra, embedding_weight[2], -1, pos_extra_embed_out);
+      ctx, pos_ids_extra, *embedding_weight[2], -1, &pos_extra_embed_out);
 
   std::vector<const DenseTensor*> embed_add_ins = {
-      word_emb_out, pos_embed_out, pos_extra_embed_out};
+      &word_emb_out, &pos_embed_out, &pos_extra_embed_out};
   std::vector<DenseTensor*> embed_add_outs = {emb_out};
-  phi::funcs::BroadcastKernel<phi::ElementwiseType::kBinary, T, T>(
-      ctx, embed_add_ins, &embed_add_outs, -1, phi::funcs::AddFunctor<T>());
+  phi::funcs::BroadcastKernel<phi::ElementwiseType::kTernary, T, T>(
+      ctx, embed_add_ins, &embed_add_outs, -1, AddThreeFunctor<T>());
 }
 
 template <typename T, typename Context>
@@ -121,11 +148,6 @@ void ErnieForInferenceKernel(
     const DenseTensor& tgt_pos_extra,
     const DenseTensor& init_score,
     const DenseTensor& tgt_mask,
-    const DenseTensor& max_dec_len,
-    const DenseTensor& min_dec_len,
-    const DenseTensor& topk,
-    const DenseTensor& topp,
-    const DenseTensor& topk,
     const std::vector<const DenseTensor*>&
         embedding_weight,  // word_embed/pos_embed/pos_exra_embed
     const std::vector<const DenseTensor*>& qkv_weight,
@@ -148,142 +170,204 @@ void ErnieForInferenceKernel(
     const DenseTensor& mask_lm_trans_fc_bias,
     const DenseTensor& mask_lm_out_fc_weight,
     const DenseTensor& mask_lm_out_fc_bias,
-    bool decoding_strategy,
+    const std::string& decoding_strategy,
     int64_t end_idx,
+    int max_dec_len,
+    int min_dec_len,
+    int topk,
+    float topp,
     DenseTensor* scores,
     DenseTensor* indices) {
   auto input_dims = src_ids.dims();
   int bsz = input_dims[0];
   int input_seq_len = input_dims[1];
-  int vocab_size = embedding_weight[0].dims()[0];
-  int dim_embed = embedding_weight[0].dims()[1];
+  int vocab_size = embedding_weight[0]->dims()[0];
+  int dim_embed = embedding_weight[0]->dims()[1];
   int num_layers = qkv_weight.size();
-  int num_head = qkv_weight[0].dims()[1];
-  int dim_head = qkv_weight[0].dims()[2];
+  int num_head = qkv_weight[0]->dims()[1];
+  int dim_head = qkv_weight[0]->dims()[2];
 
   // Embedding
+  VLOG(1) << "Embedding";
 
   DenseTensor emb_out;
+  emb_out.Resize({{bsz, input_seq_len, dim_embed}});
 
-  ErnieEmbedding(
+  ErnieEmbedding<T, Context>(
       ctx, src_ids, pos_ids, pos_ids_extra, embedding_weight, &emb_out);
 
   // Process Mask
-
+  VLOG(1) << "Process Mask";
+  VLOG(1) << "input_mask.dims() " << input_mask.dims();
   DenseTensor scale_mask, attn_mask;
+  scale_mask.Resize(input_mask.dims());
+  attn_mask.Resize({{bsz, num_head, input_seq_len, input_seq_len}});
 
+  VLOG(1) << "Scale kernel";
   ScaleKernel<T, Context>(ctx, input_mask, 1e4, -1, false, &scale_mask);
 
+  VLOG(1) << "StackKernel";
   std::vector<const DenseTensor*> stack_ins(num_head, &scale_mask);
-  StackKernel<T, Context>(ctx, stack_ins, 1, attn_mask);
+  StackKernel<T, Context>(ctx, stack_ins, 1, &attn_mask);
   // PreProcess (Layernorm)
 
   // Fuse MT
+  std::vector<DenseTensor> cache_kv_tensors(num_layers);
   std::vector<DenseTensor*> cache_kvs(num_layers);
   DenseTensor enc_out;
+  enc_out.Resize(emb_out.dims());
+
+  VLOG(1) << "Prepare cache kv";
 
   for (int i = 0; i < num_layers; ++i) {
+    cache_kvs[i] = &cache_kv_tensors[i];
     cache_kvs[i]->Resize(
         {{2, bsz, num_head, input_seq_len + max_dec_len, dim_head}});
     ctx.template Alloc<T>(cache_kvs[i]);
   }
 
-  FusedMultiTransformerKernel(ctx,
-                              emb_out,
-                              *attn_mask,
-                              qkv_weight,
-                              qkv_bias,
-                              out_linear_weight,
-                              out_linear_bias,
-                              ffn1_weight,
-                              ffn1_bias,
-                              ffn2_weight,
-                              ffn2_bias,
-                              attn_ln_scale,
-                              attn_ln_bias,
-                              ffn_ln_scale,
-                              ffn_ln_bias,
-                              -1,
-                              true,
-                              1e-9,
-                              &enc_out,
-                              cache_kvs);
+  VLOG(1) << "Entre fuse mt";
+
+  VLOG(1) << *ffn1_weight[0];
+  VLOG(1) << *ffn2_weight[0];
+  FusedMultiTransformerKernel<T, Context>(ctx,
+                                          emb_out,
+                                          attn_mask,
+                                          qkv_weight,
+                                          qkv_bias,
+                                          out_linear_weight,
+                                          out_linear_bias,
+                                          ffn1_weight,
+                                          ffn1_bias,
+                                          ffn2_weight,
+                                          ffn2_bias,
+                                          attn_ln_scale,
+                                          attn_ln_bias,
+                                          ffn_ln_scale,
+                                          ffn_ln_bias,
+                                          -1,
+                                          true,
+                                          1e-9,
+                                          "gelu",
+                                          &enc_out,
+                                          cache_kvs);
 
   // Loop vars
-  DenseTensor concated_mask, pos_extra_out;
+  VLOG(1) << "Prepare Loop vars";
+
+  DenseTensor concated_mask(tgt_mask);
+  DenseTensor append_mask;
+  FullKernel<T, Context>(ctx, {bsz, 1, 1}, 1, tgt_mask.dtype(), &append_mask);
+
+  DenseTensor pos_extra_out;
+  pos_extra_out.Resize(tgt_pos_extra.dims());
+  ctx.template Alloc<int64_t>(&pos_extra_out);
 
   DenseTensor out_scores, out_indices;
-
-  DenseTensor append_mask;
-  FullKernel(ctx, {bsz, 1, 1}, tgt_mask.dtype(), 1, &append_mask);
-
   DenseTensor pre_scores(init_score);
+
+  DenseTensor ln_out, ln_mean, ln_var, fc_out1, fc_out2;
+  ln_out.Resize({{bsz, 1, dim_embed}});
+  ln_mean.Resize({{bsz}});
+  ln_var.Resize({{bsz}});
+  fc_out1.Resize({{bsz, 1, dim_embed}});
+  ctx.template Alloc<T>(&fc_out1);
+  fc_out2.Resize({{bsz, 1, vocab_size}});
+  ctx.template Alloc<T>(&fc_out2);
+
+  DenseTensor lm_out;
+  lm_out.Resize({{bsz, 1, vocab_size}});
+  ctx.template Alloc<T>(&lm_out);
+
+  DenseTensor softmax_out;
+  softmax_out.Resize({{bsz, 1, vocab_size}});
+
+  DenseTensor topk_scores, topk_indices;
+  topk_scores.Resize({{bsz, 1}});
+  topk_indices.Resize({{bsz, 1}});
 
   std::vector<int64_t> h_idx(bsz);
 
+  // Reused vars resize
+  emb_out.Resize({{bsz, 1, dim_embed}});
+
   for (int step = 0; step < max_dec_len; ++step) {
+    VLOG(1) << "step " << step;
     // Process pos_ids_extra
     DenseTensor pos_extra_bias;
-    FullKernel(ctx, {bsz, 1}, tgt_mask.dtype(), step, &pos_extra_bias);
+    FullKernel<int64_t, Context>(
+        ctx, {bsz, 1}, step, tgt_pos_extra.dtype(), &pos_extra_bias);
+
+    VLOG(1) << pos_extra_bias.dtype() << " " << tgt_pos_extra.dtype() << " "
+            << pos_extra_out.dtype();
     std::vector<const DenseTensor*> pos_extra_ins = {&pos_extra_bias,
                                                      &tgt_pos_extra};
     std::vector<DenseTensor*> pos_extra_outs = {&pos_extra_out};
-    phi::funcs::BroadcastKernel<phi::ElementwiseType::kBinary, T, T>(
-        ctx, pos_extra_ins, &pos_extra_outs, -1, phi::funcs::AddFunctor<T>());
+    phi::funcs::BroadcastKernel<phi::ElementwiseType::kBinary,
+                                int64_t,
+                                int64_t>(ctx,
+                                         pos_extra_ins,
+                                         &pos_extra_outs,
+                                         -1,
+                                         phi::funcs::AddFunctor<int64_t>());
 
     // Embedding
-    ErnieEmbedding(
+    VLOG(1) << "generation Embedding";
+    ErnieEmbedding<T, Context>(
         ctx, tgt_ids, tgt_pos, pos_extra_out, embedding_weight, &emb_out);
     // Process mask (concat + scale + stack)
-
-  std:
-    vector<const DenseTensor*> concat_ins{&tgt_mask, &append_mask};
+    VLOG(1) << "generation Process mask";
+    DenseTensor tmp_mask(concated_mask);
+    std::vector<const DenseTensor*> concat_ins{&tmp_mask, &append_mask};
     ConcatKernel<T, Context>(ctx, concat_ins, 2, &concated_mask);
+
+    scale_mask.Resize(concated_mask.dims());
+    attn_mask.Resize({{bsz, num_head, 1, concated_mask.dims()[2]}});
 
     ScaleKernel<T, Context>(ctx, concated_mask, 1e4, -1, false, &scale_mask);
 
     std::vector<const DenseTensor*> stack_ins(num_head, &scale_mask);
-    StackKernel<T, Context>(ctx, stack_ins, 1, attn_mask);
+    StackKernel<T, Context>(ctx, stack_ins, 1, &attn_mask);
 
     // Fuse MT
-    FusedMultiTransformerKernel(ctx,
-                                emb_out,
-                                *attn_mask,
-                                qkv_weight,
-                                qkv_bias,
-                                out_linear_weight,
-                                out_linear_bias,
-                                ffn1_weight,
-                                ffn1_bias,
-                                ffn2_weight,
-                                ffn2_bias,
-                                attn_ln_scale,
-                                attn_ln_bias,
-                                ffn_ln_scale,
-                                ffn_ln_bias,
-                                input_seq_len + i + 1,
-                                true,
-                                1e-9,
-                                enc_out,
-                                cache_kvs);
+    VLOG(1) << "generation Fuse MT";
+    FusedMultiTransformerKernel<T, Context>(ctx,
+                                            emb_out,
+                                            attn_mask,
+                                            qkv_weight,
+                                            qkv_bias,
+                                            out_linear_weight,
+                                            out_linear_bias,
+                                            ffn1_weight,
+                                            ffn1_bias,
+                                            ffn2_weight,
+                                            ffn2_bias,
+                                            attn_ln_scale,
+                                            attn_ln_bias,
+                                            ffn_ln_scale,
+                                            ffn_ln_bias,
+                                            input_seq_len + step + 1,
+                                            true,
+                                            1e-9,
+                                            "gelu",
+                                            &enc_out,
+                                            cache_kvs);
 
     // Calculate Logits
     // layernorm
-    DenseTensor* ln_out;
+    VLOG(1) << "generation LayerNormKernel";
 
     LayerNormKernel<T, Context>(ctx,
-                                *enc_out,
+                                enc_out,
                                 post_encoder_ln_scale,
                                 post_encoder_ln_bias,
                                 1e-9,
                                 2,
-                                ln_out,
-                                nullptr,
-                                nullptr);
+                                &ln_out,
+                                &ln_mean,
+                                &ln_var);
     // fc
-    DenseTensor fc_out;
-    fc_out.Resize({{bsz, 1, dim_embed}});
-    ctx.template Alloc<T>(&fc_out);
+    VLOG(1) << "generation fc1";
 
     auto blas = funcs::GetBlas<Context, T>(ctx);
     blas.GEMM(CblasNoTrans,
@@ -291,85 +375,86 @@ void ErnieForInferenceKernel(
               bsz,
               dim_embed,
               dim_embed,
-              1.0,
-              ln_out->data<T>(),
+              static_cast<T>(1.0),
+              ln_out.data<T>(),
               mask_lm_trans_fc_weight.data<T>(),
-              0.0,
-              fc_out.data<T>());
+              static_cast<T>(0.0),
+              fc_out1.data<T>());
 
     auto block_num = GetDesiredBlockDim(vocab_size);
     BiasGelu<<<bsz, block_num, 0, ctx.stream()>>>(
-        fc_out.data<T>(),
+        fc_out1.data<T>(),
         mask_lm_trans_fc_bias.data<T>(),
-        fc_out.numel(),
-        batch_size);
+        fc_out1.numel(),
+        bsz);
     // layernorm
+    VLOG(1) << "generation ln2";
     LayerNormKernel<T, Context>(ctx,
-                                fc_out,
+                                fc_out1,
                                 mask_lm_trans_ln_scale,
                                 mask_lm_trans_ln_bias,
                                 1e-9,
                                 2,
-                                ln_out,
-                                nullptr,
-                                nullptr);
+                                &ln_out,
+                                &ln_mean,
+                                &ln_var);
 
     // fc
-    DenseTensor lm_out;
-    fc_out.Resize({{bsz, 1, vocab_size}});
-    ctx.template Alloc<T>(&fc_out);
-    lm_out.Resize({{bsz, 1, vocab_size}});
-    ctx.template Alloc<T>(&lm_out);
+    VLOG(1) << "generation fc2";
 
     blas.GEMM(CblasNoTrans,
               CblasNoTrans,
               bsz,
               vocab_size,
               dim_embed,
-              1.0,
-              ln_out->data<T>(),
+              static_cast<T>(1.0),
+              ln_out.data<T>(),
               mask_lm_out_fc_weight.data<T>(),
-              0.0,
-              fc_out.data<T>());
+              static_cast<T>(0.0),
+              fc_out2.data<T>());
 
-    std::vector<const DenseTensor*> lm_out_ins = {&fc_out,
+    std::vector<const DenseTensor*> lm_out_ins = {&fc_out2,
                                                   &mask_lm_out_fc_bias};
     std::vector<DenseTensor*> lm_out_outs = {&lm_out};
     phi::funcs::BroadcastKernel<phi::ElementwiseType::kBinary, T, T>(
         ctx, lm_out_ins, &lm_out_outs, -1, phi::funcs::AddFunctor<T>());
     // softmax
-    DenseTensor softmax_out;
-    SoftmaxKernel<T, Context>(ctx, lm_out, -1, softmax_out);
+    VLOG(1) << "generation SoftmaxKernel";
+    // SoftmaxKernel<T, Context>(ctx, lm_out, -1, &softmax_out);
+    ctx.template Alloc<T>(&softmax_out);
+    SoftmaxForwardCUDAKernelDriver<T>(ctx, lm_out, -1, &softmax_out);
     // sampling
-    DenseTensor topk_scores, topk_indices;
-    topk_scores.Resize({{bsz, 1}});
-    ctx.template Alloc<T>(&topk_scores);
-    topk_indices.Resize({{bsz, 1}});
-    ctx.template Alloc<int64_t>(&topk_indices);
 
+    VLOG(1) << "generation TopKSamplingKernel";
     TopKSamplingKernel<T, Context>(
-        ctx, softmax_out, topk, 0, topk_scores, topk_indices);
+        ctx, softmax_out, topk, 0, &topk_scores, &topk_indices);
     // log and add pre scores
-    LogAdd<<<batch_size, 1, 0, stream>>>(
-        topk_scores.data<T>, pre_scores.data<T>(), topk_scores.numel());
+    LogAdd<T><<<bsz, 1, 0, ctx.stream()>>>(
+        topk_scores.data<T>(), pre_scores.data<T>(), topk_scores.numel());
+
+    pre_scores = topk_scores;
 
     // Concat
+    VLOG(1) << "generation concat scores";
     if (step == 0) {
       out_scores = topk_scores;
       out_indices = topk_indices;
     } else {
       DenseTensor tmp_scores, tmp_indices;
-    std:
-      vector<const DenseTensor*> concat_ins{&out_scores, &topk_scores};
+      std::vector<const DenseTensor*> concat_ins{&out_scores, &topk_scores};
       ConcatKernel<T, Context>(ctx, concat_ins, 1, &tmp_scores);
       out_scores = tmp_scores;
       concat_ins = std::vector<const DenseTensor*>{&out_indices, &topk_indices};
-      ConcatKernel<T, Context>(ctx, concat_ins, 1, &tmp_indices);
+      ConcatKernel<int64_t, Context>(ctx, concat_ins, 1, &tmp_indices);
       out_indices = tmp_indices;
     }
 
     // Whether to stop
-    cudaMemcpy(h_idx.data(), topk_indices.data<T>(), cudaMemcpyDeviceToHost);
+    VLOG(1) << "sync and copy";
+    cudaMemcpy(h_idx.data(),
+               topk_indices.data<int64_t>(),
+               topk_indices.numel() * sizeof(int64_t),
+               cudaMemcpyDeviceToHost);
 
     bool finish_flag = true;
     for (int b = 0; b < bsz; ++b) {
@@ -380,6 +465,8 @@ void ErnieForInferenceKernel(
       break;
     }
   }
+  scores = &out_scores;
+  indices = &out_indices;
 }
 }  // namespace phi
 

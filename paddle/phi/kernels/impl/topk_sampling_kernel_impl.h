@@ -12,9 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cuda_runtime.h>
+#include <curand_kernel.h>
+
 #include "paddle/phi/kernels/topk_sampling_kernel.h"
 
+#ifdef __NVCC__
+#include "cub/cub.cuh"
+#endif
+
+#ifdef __HIPCC__
+#include <hipcub/hipcub.hpp>
+namespace cub = hipcub;
+#endif
+
+#pragma once
 namespace phi {
+
+#define HALF_FLT_MAX 65504.0f
 
 __device__ __forceinline__ bool gt(float a, float b) { return a > b; }
 
@@ -73,7 +88,7 @@ __global__ void PrepareTopK(const T* src_probs,  // bsz * vocab_size
 
   int stride = num_blocks_per_beam * num_threads_per_block;
 
-  typedef cub::BlockReduce<TopKPair<T>, NUM_THREADS_PER_BLOCK> BlockReduce;
+  using BlockReduce = cub::BlockReduce<TopKPair<T>, NUM_THREADS_PER_BLOCK>;
   __shared__ typename BlockReduce::TempStorage temp_storage;
 
   for (int iter = 0; iter < k; ++iter) {
@@ -118,7 +133,7 @@ __global__ void TopKSampling(
   int batch_id = blockIdx.x;
   int stride = NUM_THREADS_PER_BLOCK;
 
-  typedef cub::BlockReduce<TopKPair<T>, NUM_THREADS_PER_BLOCK> BlockReduce;
+  using BlockReduce = cub::BlockReduce<TopKPair<T>, NUM_THREADS_PER_BLOCK>;
   __shared__ typename BlockReduce::TempStorage temp_storage;
 
   extern __shared__ unsigned char smem[];  // num_blocks_per_beam * k
@@ -179,12 +194,10 @@ void TopKSamplingKernel(const Context& ctx,
                         int random_seed,
                         DenseTensor* topk_scores,
                         DenseTensor* topk_indices) {
-  int num_batch = probs.dims[0];
-  int vocab_size = probs.dims[1];
+  int num_batch = probs.dims()[0];
+  int vocab_size = probs.dims()[1];
 
-  topk_scores->Resize({{num_batch, 1}});
   ctx.template Alloc<T>(topk_scores);
-  topk_indices->Resize({{num_batch, 1}});
   ctx.template Alloc<int64_t>(topk_indices);
 
   constexpr int NUM_THREADS_PER_BLOCK = 128;
@@ -201,7 +214,7 @@ void TopKSamplingKernel(const Context& ctx,
   ctx.template Alloc<int64_t>(&tmp_ids);
 
   workspace.Resize(
-      {{static_cast<int64_t>(sizeof(nv_data_t) * num_batch * vocab_size)}});
+      {{static_cast<int64_t>(sizeof(T) * num_batch * vocab_size)}});
   ctx.template Alloc<T>(&workspace);
 
   // nv_data_t* tmp_vals_data =
@@ -210,13 +223,14 @@ void TopKSamplingKernel(const Context& ctx,
   // reinterpret_cast<nv_data_t*>(workspace.data<pd_data_t>());
 
   dim3 grid(num_batch, NUM_BLOCKS_PER_BEAM);
-  PrepareTopK<nv_data_t, NUM_THREADS_PER_BLOCK>
-      <<<grid, NUM_THREADS_PER_BLOCK, 0, ctx.stream>>>(probs.data<T>(),
-                                                       workspace.data<T>(),
-                                                       tmp_vals.data<T>(),
-                                                       tmp_ids.data<int64_t>(),
-                                                       k,
-                                                       vocab_size);
+  PrepareTopK<T, NUM_THREADS_PER_BLOCK>
+      <<<grid, NUM_THREADS_PER_BLOCK, 0, ctx.stream()>>>(
+          probs.data<T>(),
+          workspace.data<T>(),
+          tmp_vals.data<T>(),
+          tmp_ids.data<int64_t>(),
+          k,
+          vocab_size);
 
   // Step 2. reduce all top k of a batch and sampling one for each batch
   curandState_t* curand_stat;
@@ -229,20 +243,20 @@ void TopKSamplingKernel(const Context& ctx,
   curand_stat =
       reinterpret_cast<curandState_t*>(curand_states_buf.data<uint8_t>());
 
-  CurandInitialize<<<num_batch, 1, 0, cu_stream>>>(
+  CurandInitialize<<<num_batch, 1, 0, ctx.stream()>>>(
       curand_stat, num_batch, random_seed);
-  TopKSampling<nv_data_t, NUM_THREADS_PER_BLOCK>
+  TopKSampling<T, NUM_THREADS_PER_BLOCK>
       <<<num_batch,
          NUM_THREADS_PER_BLOCK,
          NUM_BLOCKS_PER_BEAM * k * sizeof(T) + k * sizeof(T) +
              k * sizeof(int64_t),
-         cu_stream>>>(tmp_vals.data<T>(),
-                      tmp_ids.data<int64_t>(),
-                      topk_scores.data<T>(),
-                      topk_indices.data<int64_t>(),
-                      k,
-                      NUM_BLOCKS_PER_BEAM,
-                      curand_stat);
+         ctx.stream()>>>(tmp_vals.data<T>(),
+                         tmp_ids.data<int64_t>(),
+                         topk_scores->data<T>(),
+                         topk_indices->data<int64_t>(),
+                         k,
+                         NUM_BLOCKS_PER_BEAM,
+                         curand_stat);
 }
 
 }  // namespace phi

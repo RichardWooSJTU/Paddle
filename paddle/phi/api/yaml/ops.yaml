@@ -347,12 +347,13 @@
   backward : erfinv_grad
 
 - op : ernie_for_inference
-  args : (Tensor src_ids, Tensor pos_ids, Tensor input_mask, Tensor pos_ids_extra, Tensor tgt_ids, Tensor tgt_pos, Tensor tgt_pos_extra, Tensor init_score, Tensor tgt_mask, Tensor max_dec_len, Tensor min_dec_len, Tensor topk, Tensor topp, str decoding_strategy)
+  args : (Tensor src_ids, Tensor pos_ids, Tensor input_mask, Tensor pos_ids_extra, Tensor tgt_ids, Tensor tgt_pos, Tensor tgt_pos_extra, Tensor init_score, Tensor tgt_mask, Tensor[] embedding_weight, Tensor[] qkv_weight, Tensor[] qkv_bias, Tensor[] out_linear_weight, Tensor[] out_linear_bias, Tensor[] ffn1_weight, Tensor[] ffn1_bias, Tensor[] ffn2_weight, Tensor[] ffn2_bias, Tensor[] attn_ln_scale, Tensor[] attn_ln_bias, Tensor[] ffn_ln_scale, Tensor[] ffn_ln_bias, Tensor post_encoder_ln_scale, Tensor post_encoder_ln_bias, Tensor mask_lm_trans_ln_scale, Tensor mask_lm_trans_ln_bias, Tensor mask_lm_trans_fc_weight, Tensor mask_lm_trans_fc_bias, Tensor mask_lm_out_fc_weight, Tensor mask_lm_out_fc_bias, str decoding_strategy, int64_t end_idx, int max_dec_len, int min_dec_len, int topk, float topp)
   output : Tensor(scores), Tensor(indices)
   infer_meta :
     func : ErnieForInferenceInferMeta
   kernel :
-    func : ErnieForInference
+    func : ernie_for_inference
+    data_type: input_mask
 
 - op : exp
   args : (Tensor x)
