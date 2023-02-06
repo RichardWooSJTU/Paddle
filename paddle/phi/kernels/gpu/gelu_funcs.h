@@ -37,6 +37,14 @@ static __device__ __forceinline__ float FP32FastTanh(float x) {
   return tanhf(x);
 }
 
+template <typename T, bool FastMode>
+static __device__ __forceinline__ T GeluFwd(T x) {
+  const float cast_x = static_cast<float>(x);
+  auto tanh_out = FP32FastTanh<FastMode>(0.79788456f * cast_x *
+                                         (1.0f + 0.044715f * cast_x * cast_x));
+  return static_cast<T>(cast_x * 0.5f * (1.0f + tanh_out));
+}
+
 template <bool FastMode>
 static __device__ __forceinline__ float FP32GeluFwd(float x) {
   auto tanh_out =
