@@ -38,19 +38,24 @@ using LayerNormScaleBiasT =
 template <typename T,
           int VecSize,
           typename U,
-          bool ScaleBiasWithSameTypeX = false>
+          bool ScaleBiasWithSameTypeX = false,
+          typename OutType = T>
 __device__ void CalcLayernormY(
     const LayerNormScaleBiasT<T, U, ScaleBiasWithSameTypeX> *scale,
     const LayerNormScaleBiasT<T, U, ScaleBiasWithSameTypeX> *bias,
     const T *x,
-    T *y,
+    OutType *y,
     const int row_id,
     const int col_id,
     const int cols,
     const LayerNormParamType<T> mean_val,
-    const LayerNormParamType<T> invvar) {
+    const LayerNormParamType<T> invvar,
+    const float quant_in_scale = 1.0,
+    const int quant_round_type = 1,
+    const float quant_max_bound = 127.0,
+    const float quant_min_bound = -127.0) {
   using LoadT = phi::AlignedVector<T, VecSize>;
-  using StoreT = phi::AlignedVector<T, VecSize>;
+  using StoreT = phi::AlignedVector<OutType, VecSize>;
   using LoadU = phi::AlignedVector<U, VecSize>;
   using LoadScaleOrBias =
       phi::AlignedVector<LayerNormScaleBiasT<T, U, ScaleBiasWithSameTypeX>,
@@ -80,12 +85,23 @@ __device__ void CalcLayernormY(
 
     StoreT y_vec;
     for (int ii = 0; ii < VecSize; ii++) {
-      y_vec[ii] =
-          static_cast<T>(static_cast<U>(scale_vec[ii]) *
+      if (std::is_same<OutType, int8_t>::value) {
+        y_vec[ii] =quant_helper(static_cast<T>(static_cast<U>(scale_vec[ii]) *
+                             (static_cast<U>(x_vec[ii]) - mean_val) * invvar +
+                         static_cast<U>(bias_vec[ii])),
+              quant_in_scale,
+              quant_round_type,
+              quant_max_bound,
+              quant_min_bound);
+      } else {
+        y_vec[ii] =
+          static_cast<OutType>(static_cast<U>(scale_vec[ii]) *
                              (static_cast<U>(x_vec[ii]) - mean_val) * invvar +
                          static_cast<U>(bias_vec[ii]));
+      }
+      
     }
-    phi::Store<T, VecSize>(y_vec, &y[row_id * cols + i]);
+    phi::Store<OutType, VecSize>(y_vec, &y[row_id * cols + i]);
   }
 }
 
@@ -110,6 +126,8 @@ template <typename T,
           int VecSize,
           typename U,
           bool ScaleBiasWithSameTypeX = false,
+          typename InType = T,
+          typename OutType = T,
           bool HasDropout = true>
 __global__ void FusedLayernormResidualDropoutBias(
     const size_t rows,
@@ -120,16 +138,22 @@ __global__ void FusedLayernormResidualDropoutBias(
     const bool is_test,
     const uint64_t increment,
     const float epsilon,
-    const T *src,
+    const InType *src,
     const T *residual,
     const T *bias,
     const LayerNormScaleBiasT<T, U, ScaleBiasWithSameTypeX> *scale,
     const LayerNormScaleBiasT<T, U, ScaleBiasWithSameTypeX> *layernorm_bias,
     MaskType *mask,
     T *dst,
-    T *layernorm_dst,
+    OutType *layernorm_dst,
     LayerNormParamType<T> *mean,
-    LayerNormParamType<T> *var) {
+    LayerNormParamType<T> *var,
+    const float quant_last_in_scale = 1.0,
+    const float *dequant_out_scale_data = nullptr,
+    const float quant_next_in_scale = 1.0,
+    const int quant_round_type = 1,
+    const float quant_max_bound = 127.0,
+    const float quant_min_bound = -127.0) {
   int col_id = threadIdx.x;
   int row_id = blockIdx.x;
   int idx = row_id * cols + col_id;
@@ -155,7 +179,7 @@ __global__ void FusedLayernormResidualDropoutBias(
                                       true,
                                       false,
                                       phi::funcs::ReluFunctor<T>,
-                                      T,
+                                      InType,
                                       T,
                                       HasDropout>(row_id,
                                                   i,
@@ -171,7 +195,13 @@ __global__ void FusedLayernormResidualDropoutBias(
                                                   is_test,
                                                   &mean_val,
                                                   &var_val,
-                                                  relu);
+                                                  relu,
+        quant_last_in_scale,  
+        dequant_out_scale_data,
+        quant_next_in_scale,   
+        quant_round_type,      
+        quant_max_bound,    
+        quant_min_bound);
   }
 
   mean_val = BlockReduceSum<U>(mean_val, shared_mean);
@@ -200,14 +230,20 @@ __global__ void FusedLayernormResidualDropoutBias(
                                                         col_id,
                                                         cols,
                                                         mean_val,
-                                                        invvar);
+                                                        invvar,
+        quant_next_in_scale,  
+        quant_round_type,      
+        quant_max_bound,    
+        quant_min_bound);
 }
 
 template <typename T,
           typename MaskType,
           int VecSize,
           typename U,
-          bool ScaleBiasWithSameTypeX = false>
+          bool ScaleBiasWithSameTypeX = false,
+          typename InType = T,
+          typename OutType = T>
 void LaunchFusedLayernormResidualDropoutBiasCUDAKernel(
     int grid_dim,
     int block_dim,
@@ -220,22 +256,30 @@ void LaunchFusedLayernormResidualDropoutBiasCUDAKernel(
     const bool is_test,
     const uint64_t increment,
     const float epsilon,
-    const T *src,
+    const InType *src,
     const T *residual,
     const T *bias,
     const LayerNormScaleBiasT<T, U, ScaleBiasWithSameTypeX> *scale,
     const LayerNormScaleBiasT<T, U, ScaleBiasWithSameTypeX> *layernorm_bias,
     MaskType *mask,
     T *dst,
-    T *layernorm_dst,
+    OutType *layernorm_dst,
     LayerNormParamType<T> *mean,
-    LayerNormParamType<T> *var) {
+    LayerNormParamType<T> *var,
+    const float quant_last_in_scale = 1.0,
+    const float *dequant_out_scale_data = nullptr,
+    const float quant_next_in_scale = 1.0,
+    const int quant_round_type = 1,
+    const float quant_max_bound = 127.0,
+    const float quant_min_bound = -127.0) {
   if (dropout_prob != 0.0f) {
     FusedLayernormResidualDropoutBias<T,
                                       MaskType,
                                       VecSize,
                                       U,
                                       ScaleBiasWithSameTypeX,
+                                      InType,
+                                      OutType,
                                       true>
         <<<grid_dim, block_dim, 0, stream>>>(rows,
                                              cols,
@@ -254,13 +298,21 @@ void LaunchFusedLayernormResidualDropoutBiasCUDAKernel(
                                              dst,
                                              layernorm_dst,
                                              mean,
-                                             var);
+                                             var,
+        quant_last_in_scale,  
+        dequant_out_scale_data,
+        quant_next_in_scale,   
+        quant_round_type,      
+        quant_max_bound,    
+        quant_min_bound);
   } else {
     FusedLayernormResidualDropoutBias<T,
                                       MaskType,
                                       VecSize,
                                       U,
                                       ScaleBiasWithSameTypeX,
+                                      InType,
+                                      OutType,
                                       false>
         <<<grid_dim, block_dim, 0, stream>>>(rows,
                                              cols,
@@ -279,7 +331,13 @@ void LaunchFusedLayernormResidualDropoutBiasCUDAKernel(
                                              dst,
                                              layernorm_dst,
                                              mean,
-                                             var);
+                                             var,
+        quant_last_in_scale,  
+        dequant_out_scale_data,
+        quant_next_in_scale,   
+        quant_round_type,      
+        quant_max_bound,    
+        quant_min_bound);
   }
 }
 
@@ -1021,16 +1079,22 @@ void LaunchLayernormResidualDropoutBias(
         is_test,
         increment,
         epsilon,
-        reinterpret_cast<const T *>(src),
+        src,
         residual,
         bias,
         scale,
         layernorm_bias,
         mask_data,
         dst,
-        reinterpret_cast<T *>(layernorm_dst),
+        layernorm_dst,
         mean,
-        var);
+        var,
+        quant_last_in_scale,  
+        dequant_out_scale_data,
+        quant_next_in_scale,   
+        quant_round_type,      
+        quant_max_bound,    
+        quant_min_bound);
   } else {
     if (can_call_fast_ln_kernel) {
       switch (cols) {
@@ -1059,16 +1123,22 @@ void LaunchLayernormResidualDropoutBias(
           is_test,
           increment,
           epsilon,
-          reinterpret_cast<const T *>(src),
+          src,
           residual,
           bias,
           scale,
           layernorm_bias,
           mask_data,
           dst,
-          reinterpret_cast<T *>(layernorm_dst),
+          layernorm_dst,
           mean,
-          var);
+          var,
+        quant_last_in_scale,  
+        dequant_out_scale_data,
+        quant_next_in_scale,   
+        quant_round_type,      
+        quant_max_bound,    
+        quant_min_bound);
     }
   }
 }

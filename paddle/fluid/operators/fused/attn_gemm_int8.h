@@ -35,7 +35,7 @@ class AttnMatmulINT8 {
   AttnMatmulINT8(
       const phi::GPUContext& dev_ctx, int m, int n, int k, bool compute_bias)
       : dev_ctx_(dev_ctx), m_(m), n_(n), k_(k), compute_bias_(compute_bias) {
-    auto helper = std::make_shared<CublasLtHelper>(m, k, n);
+    auto helper = std::make_shared<CublasLtHelper>(m, k, n, dev_ctx.cublaslt_handle());
     helpers_.emplace_back(helper);
     gpu_config_ = std::make_unique<GpuLaunchConfig>(
         phi::backends::gpu::GetGpuLaunchConfig1D(

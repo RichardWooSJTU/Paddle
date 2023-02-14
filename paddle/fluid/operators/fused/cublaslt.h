@@ -40,24 +40,15 @@ const std::map<std::tuple<int, int, int>, CublasLtAlgoParam> AlgoParamCache{};
 
 class CublasLtHelper {
  public:
-  CublasLtHelper(int m, int k, int n)
-      : alpha_(1), beta_(0), m_(m), k_(k), n_(n) {
+  CublasLtHelper(int m, int k, int n, cublasLtHandle_t handle)
+      : alpha_(1), beta_(0), m_(m), k_(k), n_(n), handle_(handle) {
     cublasStatus_t status;
-    // handle and matmul desc
-    status = dyl::cublasLtCreate(&handle_);
 #if CUBLAS_VER_MAJOR < 11
     cudaDataType_t cudaComputeType = CUDA_R_32I;
 #else
     cublasComputeType_t cudaComputeType = CUBLAS_COMPUTE_32I;
 #endif
 
-    PADDLE_ENFORCE_EQ(
-        status,
-        CUBLAS_STATUS_SUCCESS,
-        platform::errors::External(
-            "cublasLtMatrixLayoutCreate execution error"
-            "refer https://docs.nvidia.com/cuda/cublas/index.html to get more "
-            "information"));
 
 #if CUBLAS_VER_MAJOR < 11
     status = dyl::cublasLtMatmulDescCreate(&matmul_desc_, cudaComputeType);
@@ -178,13 +169,19 @@ class CublasLtHelper {
 #endif
 #endif
   }
-  ~CublasLtHelper() {}
+  ~CublasLtHelper() {
+    if (matmul_desc_) dyl::cublasLtMatmulDescDestroy(matmul_desc_);
+    if (A_desc_) dyl::cublasLtMatrixLayoutDestroy(A_desc_);
+    if (B_desc_) dyl::cublasLtMatrixLayoutDestroy(B_desc_);
+    if (C_desc_) dyl::cublasLtMatrixLayoutDestroy(C_desc_);
+  }
 
   void GEMM(int8_t* A_dev,
             const int8_t* B_dev,
             int32_t* C_dev,
             cudaStream_t stream,
             void* workspace = nullptr) {
+    VLOG(1) << m_ << " " << k_ << " " << n_;            
     cublasStatus_t status;
 
     status = dyl::cublasLtMatmul(handle_,
@@ -216,6 +213,7 @@ class CublasLtHelper {
             "cublasLtMatmul execution error"
             "refer https://docs.nvidia.com/cuda/cublas/index.html to get more "
             "information"));
+    // PADDLE_ENFORCE_GPU_SUCCESS(cudaDeviceSynchronize());
   }
 
  private:
