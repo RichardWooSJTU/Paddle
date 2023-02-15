@@ -24,6 +24,7 @@ register_operators(
   fused_feedforward_op
   fused_multi_transformer_op
   fused_multi_transformer_int8_op
+  fused_multi_transformer_dyquant_op
   fused_bias_dropout_residual_layer_norm_op
   resnet_unit_op
   fused_gemm_epilogue_op
@@ -123,6 +124,7 @@ if(WITH_GPU OR WITH_ROCM)
     op_library(fused_attention_op)
     op_library(fused_multi_transformer_op)
     op_library(fused_multi_transformer_int8_op)
+    op_library(fused_multi_transformer_dyquant_op)
     op_library(fused_bias_dropout_residual_layer_norm_op)
   endif()
   # resnet_unit needs cudnn 8.0 above

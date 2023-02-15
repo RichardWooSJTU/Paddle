@@ -23,6 +23,7 @@ limitations under the License. */
 #include "paddle/phi/backends/gpu/gpu_launch_config.h"
 #include "paddle/phi/kernels/funcs/broadcast_function.h"
 #include "paddle/phi/kernels/funcs/elementwise_functor.h"
+#include "paddle/phi/kernels/abs_kernel.h"
 
 namespace paddle {
 namespace operators {
@@ -43,6 +44,87 @@ class AttnMatmulINT8 {
   }
   ~AttnMatmulINT8() {}
 
+  void ComputeForwardDyquant(const phi::DenseTensor* weight,
+                      const phi::DenseTensor* input,
+                      phi::DenseTensor* input_tmp,
+                      const phi::DenseTensor* bias,
+                      phi::DenseTensor* output,
+                      phi::DenseTensor* output_tmp,
+                      phi::DenseTensor* bias_out,
+                      const phi::DenseTensor* dequant_out_scale,
+                      std::string name,
+                      const int quant_round_type = 1,
+                      const float quant_max_bound = 127.0,
+                      const float quant_min_bound = -127.0) {
+    // PrintMatrix(weight->data<int8_t>(), weight->numel(), name + "_weight");      
+    // PrintMatrix(input->data<T>(), input->numel(), name + "_in");              
+        
+    // PrintMatrix(dequant_out_scale->data<float>(), n_, name + "_out_scale");
+
+    phi::DenseTensor quant_in_scale;
+    quant_in_scale.Resize({1});
+    dev_ctx_.Alloc<T>(&quant_in_scale, sizeof(T));
+                
+    {
+      VLOG(1) << "enter in max_kernel_launcher";
+      phi::DenseTensor tmp;
+      tmp.Resize(input->dims());
+      dev_ctx_.Alloc<T>(&tmp, input->numel() * sizeof(T));
+      phi::AbsKernel<T>(dev_ctx_, *input, &tmp);
+      // PrintMatrix(tmp.data<T>(), tmp.numel(), name + "_abs_in");
+
+      max_kernel_launcher(dev_ctx_,
+                          tmp.data<T>(),
+                          quant_in_scale.data<T>(),
+                          m_ * k_);  // max range of input
+      VLOG(1) << "end max_kernel_launcher";
+    }
+    // PrintMatrix(quant_in_scale.data<T>(), 1, name + "_in_scale");  
+    quantize_kernel_launcher<T>(input->data<T>(),
+                                input_tmp->data<int8_t>(),
+                                0,
+                                quant_in_scale.data<T>(),
+                                m_,
+                                k_,
+                                quant_round_type,
+                                quant_max_bound,
+                                quant_min_bound,
+                                dev_ctx_.stream());
+    // PrintMatrix(input_tmp->data<int8_t>(), input->numel(), name + "_in_int8");  
+    VLOG(1) << "end quantize_kernel_launcher";
+
+    helpers_[0]->GEMM(input_tmp->data<int8_t>(),
+                      weight->data<int8_t>(),
+                      output_tmp->data<int32_t>(),
+                      dev_ctx_.stream());
+
+    dequantize_kernel_launcher<T>(output_tmp->data<int32_t>(),
+                                  output->data<T>(),
+                                  m_,
+                                  n_,
+                                  dev_ctx_.stream(),
+                                  gpu_config_.get(),
+                                  0,
+                                  quant_in_scale.data<T>(),
+                                  dequant_out_scale->data<float>());
+    // PrintMatrix(output->data<T>(), output->numel(), name + "_out");  
+    VLOG(1) << "end dequantize_kernel_launcher " << compute_bias_;  
+
+    if (compute_bias_) {
+      // bias_out = output + bias
+      std::vector<const phi::DenseTensor*> ins = {output, bias};
+      std::vector<phi::DenseTensor*> outs = {bias_out};
+      phi::funcs::BroadcastKernel<phi::ElementwiseType::kBinary, T, T>(
+          dev_ctx_, ins, &outs, -1, phi::funcs::AddFunctor<T>());
+      PADDLE_ENFORCE_EQ(cudaGetLastError(),
+                        cudaSuccess,
+                        platform::errors::Fatal(
+                            "cuda error occured after computing bias. "
+                            "But it does not mean this error is caused by "
+                            "bias computing"));
+    }
+  }
+
   // This function is used to execute GEMM, with input and output's types are
   // both T.
   void ComputeForward(const phi::DenseTensor* weight,
@@ -60,6 +142,7 @@ class AttnMatmulINT8 {
     quantize_kernel_launcher<T>(input->data<T>(),
                                 input_tmp->data<int8_t>(),
                                 quant_in_scale,
+                                nullptr,
                                 m_,
                                 k_,
                                 quant_round_type,
@@ -79,6 +162,7 @@ class AttnMatmulINT8 {
                                   dev_ctx_.stream(),
                                   gpu_config_.get(),
                                   quant_in_scale,
+                                  nullptr,
                                   dequant_out_scale->data<float>());
 
     if (compute_bias_) {
@@ -133,6 +217,7 @@ class AttnMatmulINT8 {
                                   dev_ctx_.stream(),
                                   gpu_config_.get(),
                                   quant_in_scale,
+                                  nullptr,
                                   dequant_out_scale->data<float>());
 
     if (compute_bias_) {
@@ -165,6 +250,7 @@ class AttnMatmulINT8 {
     quantize_kernel_launcher<T>(input->data<T>(),
                                 input_tmp->data<int8_t>(),
                                 quant_in_scale,
+                                nullptr,
                                 m_,
                                 k_,
                                 quant_round_type,
