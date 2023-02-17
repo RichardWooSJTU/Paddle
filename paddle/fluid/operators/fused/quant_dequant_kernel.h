@@ -69,11 +69,20 @@ __global__ void quantize_kernel(const T* input,
   int n_id = (blockIdx.x * blockDim.x + threadIdx.x) << 2;
   int m_id = blockIdx.y * blockDim.y + threadIdx.y;
 
-  auto quant_in_scale = quant_in_scale_gpu
-                            ? (1.0f / static_cast<float>(quant_in_scale_gpu[0]))
-                            : scale;
+  // auto quant_in_scale = quant_in_scale_gpu
+  //                           ? (1.0f / static_cast<float>(quant_in_scale_gpu[0]))
+  //                           : scale;
+  
 
   bool check = ((m_id < m) && (n_id < n));
+  float quant_in_scale = 0;
+  if (quant_in_scale_gpu) {
+    quant_in_scale = static_cast<float>(quant_in_scale_gpu[0]);
+    // if (quant_in_scale > 10.0f) quant_in_scale /= 2.0f;
+    quant_in_scale = 1.0f / quant_in_scale;
+  } else {
+    quant_in_scale = scale;
+  }
   if (check) {
     char4 tmp;
     tmp.x = quant_helper(input[m_id * n + n_id],
@@ -137,6 +146,7 @@ __global__ void dequantize_kernel(T* output,
   int numel = m * n;
   int stride = blockDim.x * gridDim.x * VecSize;
   int idx = (blockIdx.x * blockDim.x + threadIdx.x) * VecSize;
+  int raw_id = idx / n;
   int col_id = idx % n;
 
   phi::AlignedVector<int32_t, VecSize> in_vec;
@@ -145,7 +155,9 @@ __global__ void dequantize_kernel(T* output,
 
   float real_quant_in_scale = 0;
   if (quant_in_scale_gpu) {
-    real_quant_in_scale = static_cast<float>(quant_in_scale_gpu[0]) / 127.0f;
+    real_quant_in_scale = static_cast<float>(quant_in_scale_gpu[0]);
+    // if (real_quant_in_scale > 10.0f) real_quant_in_scale /= 2.0f;
+    real_quant_in_scale = real_quant_in_scale / 127.0f;
   }
 
   for (; idx < numel; idx += stride) {

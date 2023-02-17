@@ -290,7 +290,11 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
       // step1. layer_norm
       if (i == 0 && pre_layer_norm) {
         auto *ln_scale_data = ln_scales[i]->data<U>();
-        auto *ln_bias_data = ln_biases[i]->data<U>();
+        auto *ln_bias_data = ln_biases[i]->data<U>();  
+        PrintMatrix(ln_scale_data, ln_scales[i]->numel(), "ln_scale_" + std::to_string(i) + "_step_" + std::to_string(time_step_value) + "_device_" + std::to_string(dev_ctx.GetPlace().GetDeviceId())); 
+        PrintMatrix(ln_bias_data, ln_biases[i]->numel(), "ln_bias_" + std::to_string(i) + "_step_" + std::to_string(time_step_value) + "_device_" + std::to_string(dev_ctx.GetPlace().GetDeviceId())); 
+        PrintMatrix(x_data, input_x->numel(), "input_step_" + std::to_string(time_step_value) + "_device_" + std::to_string(dev_ctx.GetPlace().GetDeviceId())); 
+        
         // TODO(wangxi): can remove mean var in inference
         // PrintMatrix(x_data, buf0->numel(), "X_DATA");
         // PrintMatrix(ln_scales[i]->data<U>(), ln_scales[i]->numel(), "ln_scales");
@@ -651,6 +655,8 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
         if (i < layers - 1) {
           auto *ln_scale_data = ln_scales[i + 1]->data<U>();
           auto *ln_bias_data = ln_biases[i + 1]->data<U>();
+          PrintMatrix(ln_scale_data, ln_scales[i+1]->numel(), "ln_scale_" + std::to_string(i) + "_step_" + std::to_string(time_step_value) + "_device_" + std::to_string(dev_ctx.GetPlace().GetDeviceId())); 
+          PrintMatrix(ln_bias_data, ln_biases[i+1]->numel(), "ln_bias_" + std::to_string(i) + "_step_" + std::to_string(time_step_value) + "_device_" + std::to_string(dev_ctx.GetPlace().GetDeviceId())); 
           ffn2_fused_dropout_helper.LayernormResidualDropoutBias(
               dev_ctx,
               buf1->data<T>(),
@@ -695,6 +701,7 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
         x_data = buf1->data<T>();
         std::swap(buf0, buf1);
       }
+      PADDLE_THROW(platform::errors::Unimplemented("STOP"));
     }
   }
 };
