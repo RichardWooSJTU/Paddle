@@ -190,7 +190,6 @@ class FusedMultiTransformerINT8OpMaker
  public:
   void Make() override {
     AddInput("X", "The input tensor.");
-    AddInput("PosIds", "debug.");
     AddInput("LnScale",
              "Scale is a 1-dimensional tensor of size "
              "H. Here, H represents the last dimension of its input tensor.")

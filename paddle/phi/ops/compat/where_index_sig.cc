@@ -20,7 +20,7 @@ KernelSignature WhereIndexOpArgumentMapping(const ArgumentMappingContext& ctx) {
   return KernelSignature("nonzero", {"Condition"}, {}, {"Out"});
 }
 
-}  // namespace phi
+}  // namespace phip
 
 PD_REGISTER_BASE_KERNEL_NAME(where_index, nonzero);
 

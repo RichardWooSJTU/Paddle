@@ -35,7 +35,6 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     auto *time_step = ctx.Input<phi::DenseTensor>("TimeStep");
     // 0. input
     auto *input_x = ctx.Input<phi::DenseTensor>("X");
-    auto *pos_ids = ctx.Input<phi::DenseTensor>("PosIds");
     const auto input_x_dims = input_x->dims();
     int bsz = input_x_dims[0];
     int seq_len = input_x_dims[1];

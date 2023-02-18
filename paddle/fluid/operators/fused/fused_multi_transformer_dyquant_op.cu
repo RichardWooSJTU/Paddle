@@ -40,11 +40,17 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
     auto quant_max_bound = ctx.Attr<float>("quant_max_bound");
     auto quant_min_bound = ctx.Attr<float>("quant_min_bound");
 
-    auto qkv_out_scales = ctx.MultiInput<phi::DenseTensor>("QKVOutScale");
-    auto out_linear_out_scales =
+    // auto qkv_out_scales = ctx.MultiInput<phi::DenseTensor>("QKVOutScale");
+    // auto out_linear_out_scales =
+    //     ctx.MultiInput<phi::DenseTensor>("OutLinearOutScale");
+    // auto ffn1_out_scales = ctx.MultiInput<phi::DenseTensor>("FFN1OutScale");
+    // auto ffn2_out_scales = ctx.MultiInput<phi::DenseTensor>("FFN2OutScale");
+
+    auto qkv_weight_ranges = ctx.MultiInput<phi::DenseTensor>("QKVOutScale");
+    auto out_linear_out_weight_ranges =
         ctx.MultiInput<phi::DenseTensor>("OutLinearOutScale");
-    auto ffn1_out_scales = ctx.MultiInput<phi::DenseTensor>("FFN1OutScale");
-    auto ffn2_out_scales = ctx.MultiInput<phi::DenseTensor>("FFN2OutScale");
+    auto ffn1_out_weight_ranges= ctx.MultiInput<phi::DenseTensor>("FFN1OutScale");
+    auto ffn2_out_weight_ranges = ctx.MultiInput<phi::DenseTensor>("FFN2OutScale");
 
     // 1. layer norm
     const auto pre_layer_norm = ctx.Attr<bool>("pre_layer_norm");

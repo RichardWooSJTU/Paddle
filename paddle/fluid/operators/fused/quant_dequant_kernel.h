@@ -179,6 +179,39 @@ __global__ void dequantize_kernel(T* output,
   }
 }
 
+template <typename T, int VecSize>
+__global__ void dequant_weight_kernel(T* output,
+                                  const int8_t* input,
+                                  const int k,
+                                  const int n,  // hidden
+                                  const float* weight_range ) { // [n]
+  int numel = k * n;
+  int stride = blockDim.x * gridDim.x * VecSize;
+  int idx = (blockIdx.x * blockDim.x + threadIdx.x) * VecSize;
+  int raw_id = idx / n;
+  int col_id = idx % n;
+
+  phi::AlignedVector<int8_t, VecSize> in_vec;
+  phi::AlignedVector<float, VecSize> out_scale_vec;
+  phi::AlignedVector<T, VecSize> out_vec;
+
+
+  for (; idx < numel; idx += stride) {
+    phi::Load<int32_t, VecSize>(input + idx, &in_vec);
+    phi::Load<float, VecSize>(weight_range + col_id, &out_scale_vec);
+
+#pragma unroll
+    for (int i = 0; i < VecSize; ++i) {
+        out_vec[i] =
+            static_cast<T>(static_cast<float>(in_vec[i]) * out_scale_vec[i] / 127.0f);
+    }
+
+    phi::Store<T, VecSize>(out_vec, output + idx);
+  }
+}
+
+
+
 template <typename T>
 void dequantize_kernel_launcher(const int32_t* input,
                                 T* output,
