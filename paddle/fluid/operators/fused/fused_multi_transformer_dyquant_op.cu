@@ -701,7 +701,7 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
         x_data = buf1->data<T>();
         std::swap(buf0, buf1);
       }
-      PADDLE_THROW(platform::errors::Unimplemented("STOP"));
+      // PADDLE_THROW(platform::errors::Unimplemented("STOP"));
     }
   }
 };

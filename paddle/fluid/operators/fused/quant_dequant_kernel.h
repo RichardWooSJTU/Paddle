@@ -77,7 +77,7 @@ __global__ void quantize_kernel(const T* input,
   bool check = ((m_id < m) && (n_id < n));
   float quant_in_scale = 0;
   if (quant_in_scale_gpu) {
-    quant_in_scale = static_cast<float>(quant_in_scale_gpu[0]);
+    quant_in_scale = static_cast<float>(quant_in_scale_gpu[m_id]);
     // if (quant_in_scale > 10.0f) quant_in_scale /= 2.0f;
     quant_in_scale = 1.0f / quant_in_scale;
   } else {
@@ -155,7 +155,7 @@ __global__ void dequantize_kernel(T* output,
 
   float real_quant_in_scale = 0;
   if (quant_in_scale_gpu) {
-    real_quant_in_scale = static_cast<float>(quant_in_scale_gpu[0]);
+    real_quant_in_scale = static_cast<float>(quant_in_scale_gpu[raw_id]);
     // if (real_quant_in_scale > 10.0f) real_quant_in_scale /= 2.0f;
     real_quant_in_scale = real_quant_in_scale / 127.0f;
   }

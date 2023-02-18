@@ -97,16 +97,16 @@ class AttnMatmulINT8 {
       dev_ctx_.Alloc<T>(&tmp, input->numel() * sizeof(T));
       phi::AbsKernel<T>(dev_ctx_, *input, &tmp);
 
-      max_kernel_launcher(dev_ctx_,
-                          tmp.data<T>(),
-                          quant_in_scale.data<T>(),
-                          m_ * k_);  // max range of input
-      // std::vector<int64_t> dims{-1};
-      // phi::MaxRawKernel<T>(dev_ctx_, tmp, dims, false, false, &quant_in_scale);
+      // max_kernel_launcher(dev_ctx_,
+      //                     tmp.data<T>(),
+      //                     quant_in_scale.data<T>(),
+      //                     m_ * k_);  // max range of input
+      std::vector<int64_t> dims{-1};
+      phi::MaxRawKernel<T>(dev_ctx_, tmp, dims, false, false, &quant_in_scale);
 
       VLOG(1) << "end max_kernel_launcher";
     }
-    PrintMatrix(quant_in_scale.data<T>(), 1, name + "_in_scale" + "_device_" + std::to_string(dev_ctx_.GetPlace().GetDeviceId()));  
+    PrintMatrix(quant_in_scale.data<T>(), quant_in_scale.numel(), name + "_in_scale" + "_device_" + std::to_string(dev_ctx_.GetPlace().GetDeviceId()));  
     quantize_kernel_launcher<T>(input->data<T>(),
                                 input_tmp->data<int8_t>(),
                                 0,
