@@ -69,6 +69,50 @@ class AttnMatmulINT8 {
   }
   ~AttnMatmulINT8() {}
 
+  void ComputeForwardSkipQuant(const phi::DenseTensor* weight,
+                      const phi::DenseTensor* input,
+                      const phi::DenseTensor* weight_range,
+                      phi::DenseTensor* output,
+                      std::string name=""
+                      ) {
+    // 1. Dequant weight
+    // phi::DenseTensor weight_dequant;
+    VLOG(1) << "weight->dims() " << weight->dims();
+    // weight_dequant.Resize({n_, k_});
+    // dev_ctx_.Alloc<T>(&weight_dequant, n_ * k_ * sizeof(T));
+
+    // auto gpu_config_weight = std::make_unique<GpuLaunchConfig>(
+    //       phi::backends::gpu::GetGpuLaunchConfig1D(
+    //           dev_ctx_, k_ * n_));
+    // dequant_weight_kernel<T><<<gpu_config_weight->block_per_grid, gpu_config_weight->thread_per_block, 0,  dev_ctx_.stream()>>>(
+    //   weight_dequant.data<T>(),
+    //   weight->data<int8_t>(),
+    //   k_, n_, 
+    //   weight_range->data<float>()
+    // ); 
+    // PrintMatrix( weight_range->data<float>(), weight_range->numel(), name + "_weight_range" + "_device_" + std::to_string(dev_ctx_.GetPlace().GetDeviceId())); 
+    // PrintMatrix( weight_dequant.data<T>(), weight_dequant.numel(), name + "_weight_dequant" + "_device_" + std::to_string(dev_ctx_.GetPlace().GetDeviceId())); 
+    
+    // 2. Calculate FP16
+    CBLAS_TRANSPOSE transA = CblasNoTrans;
+    CBLAS_TRANSPOSE transB = weight->dims().size() == 2 ? CblasNoTrans : CblasTrans;
+    T alpha = static_cast<T>(1.0);
+    T beta = static_cast<T>(0.0);
+
+    // (m, n, k) = bsz_seq, output_size, input_size, (input, weight, out)
+    auto blas = phi::funcs::GetBlas<phi::GPUContext, T>(dev_ctx_);
+    blas.GEMM(transA,
+              transB,
+              m_,
+              n_,
+              k_,
+              alpha,
+              input->data<T>(),
+              weight->data<T>(),
+              beta,
+              output->data<T>());
+  }
+
   void ComputeForwardDyquant(const phi::DenseTensor* weight,
                       const phi::DenseTensor* input,
                       phi::DenseTensor* input_tmp,
@@ -76,19 +120,16 @@ class AttnMatmulINT8 {
                       phi::DenseTensor* output,
                       phi::DenseTensor* output_tmp,
                       phi::DenseTensor* bias_out,
-                      const phi::DenseTensor* dequant_out_scale,
-                      std::string name,
-                      const int quant_round_type = 1,
-                      const float quant_max_bound = 127.0,
-                      const float quant_min_bound = -127.0) {
+                      const phi::DenseTensor* weight_range,
+                      std::string name) {
     // PrintMatrix(weight->data<int8_t>(), weight->numel(), name + "_weight");      
     PrintMatrix(input->data<T>(), input->numel(), name + "_in" + "_device_" + std::to_string(dev_ctx_.GetPlace().GetDeviceId())); 
         
     // PrintMatrix(dequant_out_scale->data<float>(), n_, name + "_out_scale");
 
-    phi::DenseTensor quant_in_scale;
-    quant_in_scale.Resize({m_});
-    dev_ctx_.Alloc<T>(&quant_in_scale, m_ * sizeof(T));
+    phi::DenseTensor input_range;
+    input_range.Resize({m_});
+    dev_ctx_.Alloc<T>(&input_range, m_ * sizeof(T));
                 
     {
       VLOG(1) << "enter in max_kernel_launcher";
@@ -102,20 +143,17 @@ class AttnMatmulINT8 {
       //                     quant_in_scale.data<T>(),
       //                     m_ * k_);  // max range of input
       std::vector<int64_t> dims{-1};
-      phi::MaxRawKernel<T>(dev_ctx_, tmp, dims, false, false, &quant_in_scale);
+      phi::MaxRawKernel<T>(dev_ctx_, tmp, dims, false, false, &input_range);
 
       VLOG(1) << "end max_kernel_launcher";
     }
-    PrintMatrix(quant_in_scale.data<T>(), quant_in_scale.numel(), name + "_in_scale" + "_device_" + std::to_string(dev_ctx_.GetPlace().GetDeviceId()));  
+    PrintMatrix(input_range.data<T>(), input_range.numel(), name + "_in_scale" + "_device_" + std::to_string(dev_ctx_.GetPlace().GetDeviceId()));  
     quantize_kernel_launcher<T>(input->data<T>(),
                                 input_tmp->data<int8_t>(),
                                 0,
-                                quant_in_scale.data<T>(),
+                                input_range.data<T>(),
                                 m_,
                                 k_,
-                                quant_round_type,
-                                quant_max_bound,
-                                quant_min_bound,
                                 dev_ctx_.stream());
     // PrintMatrix(input_tmp->data<int8_t>(), input->numel(), name + "_in_int8");  
     VLOG(1) << "end quantize_kernel_launcher";
@@ -125,15 +163,14 @@ class AttnMatmulINT8 {
                       output_tmp->data<int32_t>(),
                       dev_ctx_.stream());
 
-    dequantize_kernel_launcher<T>(output_tmp->data<int32_t>(),
+    LaunchDequantKernelForDynamic<T>(output_tmp->data<int32_t>(),
                                   output->data<T>(),
                                   m_,
                                   n_,
                                   dev_ctx_.stream(),
                                   gpu_config_.get(),
-                                  0,
-                                  quant_in_scale.data<T>(),
-                                  dequant_out_scale->data<float>());
+                                  input_range.data<T>(),
+                                  weight_range->data<float>());
     // PrintMatrix(output->data<T>(), output->numel(), name + "_out");  
     VLOG(1) << "end dequantize_kernel_launcher " << compute_bias_;  
 
@@ -172,9 +209,6 @@ class AttnMatmulINT8 {
                                 nullptr,
                                 m_,
                                 k_,
-                                quant_round_type,
-                                quant_max_bound,
-                                quant_min_bound,
                                 dev_ctx_.stream());
 
     helpers_[0]->GEMM(input_tmp->data<int8_t>(),
@@ -280,9 +314,6 @@ class AttnMatmulINT8 {
                                 nullptr,
                                 m_,
                                 k_,
-                                quant_round_type,
-                                quant_max_bound,
-                                quant_min_bound,
                                 dev_ctx_.stream());
 
     helpers_[0]->GEMM(input_tmp->data<int8_t>(),

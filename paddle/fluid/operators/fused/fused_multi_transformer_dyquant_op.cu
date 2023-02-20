@@ -13,8 +13,12 @@ limitations under the License. */
 #include "paddle/fluid/operators/fused/attn_gemm_int8.h"
 #include "paddle/fluid/operators/fused/fused_multi_transformer_op.cu.h"
 
+DECLARE_int64(skip_dynamic_quant);
+
 namespace paddle {
 namespace operators {
+
+static int decode_cnt = 0;
 
 
 template <typename T>
@@ -40,12 +44,17 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
     auto quant_max_bound = ctx.Attr<float>("quant_max_bound");
     auto quant_min_bound = ctx.Attr<float>("quant_min_bound");
 
-    auto qkv_out_scales = ctx.MultiInput<phi::DenseTensor>("QKVOutScale");
-    auto out_linear_out_scales =
-        ctx.MultiInput<phi::DenseTensor>("OutLinearOutScale");
-    auto ffn1_out_scales = ctx.MultiInput<phi::DenseTensor>("FFN1OutScale");
-    auto ffn2_out_scales = ctx.MultiInput<phi::DenseTensor>("FFN2OutScale");
+    // auto qkv_weight_ranges = ctx.MultiInput<phi::DenseTensor>("QKVOutScale");
+    // auto out_linear_out_weight_ranges =
+    //     ctx.MultiInput<phi::DenseTensor>("OutLinearOutScale");
+    // auto ffn1_weight_ranges = ctx.MultiInput<phi::DenseTensor>("FFN1OutScale");
+    // auto ffn2_weight_ranges = ctx.MultiInput<phi::DenseTensor>("FFN2OutScale");
 
+    auto qkv_weight_ranges = ctx.MultiInput<phi::DenseTensor>("QKVOutScale");
+    auto out_linear_out_weight_ranges =
+        ctx.MultiInput<phi::DenseTensor>("OutLinearOutScale");
+    auto ffn1_weight_ranges= ctx.MultiInput<phi::DenseTensor>("FFN1OutScale");
+    auto ffn2_weight_ranges = ctx.MultiInput<phi::DenseTensor>("FFN2OutScale");
     // 1. layer norm
     const auto pre_layer_norm = ctx.Attr<bool>("pre_layer_norm");
     const float epsilon = ctx.Attr<float>("epsilon");
@@ -64,6 +73,7 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
     // x: qkv's input [batch_size, seq_len, dim_embed]
     // y: qkv's weight: [3, num_head, dim_head, dim_embed]
     auto qkv_weights = ctx.MultiInput<phi::DenseTensor>("QKVW");
+    auto qkv_weights_fp = ctx.MultiInput<phi::DenseTensor>("QKVWFP");
     auto qkv_biases = ctx.MultiInput<phi::DenseTensor>("QKVBias");
     const bool trans_qkvw = ctx.Attr<bool>("trans_qkvw");
     const auto qkv_w_dims = qkv_weights[0]->dims();
@@ -79,7 +89,13 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
     // set compute_bias as false.
     AttnMatmulINT8<T> qkv_compute(dev_ctx, bsz_seq, output_size, input_size, 
                                      /*compute_bias=*/false);
-
+    AttnMatMul<T> qkv_compute_fp16(dev_ctx,
+                        false,
+                        true,
+                        bsz_seq,
+                        output_size,
+                        input_size,
+                        /*compute_bias=*/false);
     phi::DenseTensor qkv_out;
     qkv_out.Resize({{bsz, seq_len, 3, num_head, dim_head}});
     auto *qkv_out_data =
@@ -180,11 +196,15 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
 
     // 4. out_linear
     auto out_linear_weights = ctx.MultiInput<phi::DenseTensor>("OutLinearW");
+    auto out_linear_weights_fp = ctx.MultiInput<phi::DenseTensor>("OutLinearWFP");
     auto out_linear_biases = ctx.MultiInput<phi::DenseTensor>("OutLinearBias");
     int ring_id = ctx.Attr<int>("ring_id");
     // (transA, transB, compute_bias) = (false, false, false)
     AttnMatmulINT8<T> out_linear_compute(dev_ctx, 
         bsz_seq, dim_embed, hidden_size, false);
+
+    AttnMatMul<T> out_linear_compute_fp16(
+        dev_ctx, false, false, bsz_seq, dim_embed, hidden_size, false);
 
     // 5. ln(residual + bias)
     DropoutParam dropout_param2(true, 0, true, true, 0.0, nullptr, 0);
@@ -206,12 +226,15 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
 
     // 6. ffn matmul1
     auto ffn1_weights = ctx.MultiInput<phi::DenseTensor>("FFN1Weight");
+    auto ffn1_weights_fp = ctx.MultiInput<phi::DenseTensor>("FFN1WeightFP");
     auto ffn1_biases = ctx.MultiInput<phi::DenseTensor>("FFN1Bias");
     auto ffn1_weight_dim = ffn1_weights[0]->dims();
 
     int dim_ffn = ffn1_weight_dim[0];
     AttnMatmulINT8<T> ffn1_linear_compute(
         dev_ctx, bsz_seq, dim_ffn, dim_embed, false);
+    AttnMatMul<T> ffn1_linear_compute_fp16(
+        dev_ctx, false, false, bsz_seq, dim_ffn, dim_embed, false);
     phi::DenseTensor ffn1_out;
     ffn1_out.Resize({{bsz_seq, dim_ffn}});
     auto *ffn1_out_data =
@@ -231,9 +254,12 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
 
     // 8. ffn2 matmul
     auto ffn2_weights = ctx.MultiInput<phi::DenseTensor>("FFN2Weight");
+    auto ffn2_weights_fp = ctx.MultiInput<phi::DenseTensor>("FFN2WeightFP");
     auto ffn2_biases = ctx.MultiInput<phi::DenseTensor>("FFN2Bias");
     AttnMatmulINT8<T> ffn2_linear_compute(
         dev_ctx, bsz_seq, dim_embed, dim_ffn, false);
+    AttnMatMul<T> ffn2_linear_compute_fp16(
+        dev_ctx, false, false, bsz_seq, dim_embed, dim_ffn, false);
 
     // 9. ffn2 residual bias
     DropoutParam ffn2_dropout_param(true, 0, true, true, 0.0, nullptr, 0);
@@ -286,7 +312,15 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
       buf1 = out;
     }
 
+    bool skip_quant = true;
+
+    
+    VLOG(1) << "decode_cnt " << decode_cnt;
+
     for (int i = 0; i < layers; ++i) {
+      if (i < FLAGS_skip_dynamic_quant) skip_quant = true; 
+      else skip_quant = false; 
+      VLOG(1) << "skip_quant " << skip_quant;
       // step1. layer_norm
       if (i == 0 && pre_layer_norm) {
         auto *ln_scale_data = ln_scales[i]->data<U>();
@@ -316,6 +350,7 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
       // NOTE: in decoder stage, bias is fused in fmha
       const phi::DenseTensor *bias = time_step ? nullptr : qkv_bias;
       if (!pre_layer_norm && i == 0) {
+        if (!skip_quant) {
         qkv_compute.ComputeForwardDyquant(
             qkv_weights[i],
             input_x,
@@ -324,25 +359,41 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
             &qkv_out,
             &output_workspace,
             &qkv_out,
-            qkv_out_scales[i],
-            "qkv_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
-            quant_round_type,
-            quant_max_bound,
-            quant_min_bound);
+            qkv_weight_ranges[i],
+            "qkv_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value));
+        } else {
+          // qkv_compute.ComputeForwardSkipQuant(
+          //     qkv_weights_fp[i],
+          //     input_x,
+          //     qkv_weight_ranges[i],
+          //     &qkv_out,
+          //   "qkv_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value));
+          qkv_compute_fp16.ComputeForward(
+            qkv_weights_fp[i], input_x, bias, &qkv_out, &qkv_out);
+        }
       } else {
-        qkv_compute.ComputeForwardDyquant(
-           qkv_weights[i],
-            buf1,
-            &input_workspace,
-            bias,
-            &qkv_out,
-            &output_workspace,
-            &qkv_out,
-            qkv_out_scales[i],
-            "qkv_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
-            quant_round_type,
-            quant_max_bound,
-            quant_min_bound);
+        if (!skip_quant) {
+          qkv_compute.ComputeForwardDyquant(
+            qkv_weights[i],
+              buf1,
+              &input_workspace,
+              bias,
+              &qkv_out,
+              &output_workspace,
+              &qkv_out,
+              qkv_weight_ranges[i],
+              "qkv_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value));
+        } else {
+          // qkv_compute.ComputeForwardSkipQuant(
+          //     qkv_weights_fp[i],
+          //     buf1,
+          //     qkv_weight_ranges[i],
+          //     &qkv_out,
+          //   "qkv_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value));
+
+        qkv_compute_fp16.ComputeForward(
+            qkv_weights_fp[i], buf1, bias, &qkv_out, &qkv_out);
+        }
       }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step2";
@@ -501,34 +552,51 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
 #endif
 
       if (pre_layer_norm) {
-        out_linear_compute.ComputeForwardDyquant(
-            out_linear_weights[i],
-            &fmha_out,
-            &input_workspace,
-            nullptr,
-            buf1,
-            &output_workspace,
-            nullptr,
-            out_linear_out_scales[i],
-            "out_linear_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
-            quant_round_type,
-            quant_max_bound,
-            quant_min_bound);
+        if (!skip_quant) {
+          out_linear_compute.ComputeForwardDyquant(
+              out_linear_weights[i],
+              &fmha_out,
+              &input_workspace,
+              nullptr,
+              buf1,
+              &output_workspace,
+              nullptr,
+              out_linear_out_weight_ranges[i],
+              "out_linear_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value));
+        } else {
+          // out_linear_compute.ComputeForwardSkipQuant(
+          //     out_linear_weights_fp[i],
+          //     &fmha_out,
+          //     out_linear_out_weight_ranges[i],
+          //     buf1,
+          //     "out_linear_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value));
+        out_linear_compute_fp16.ComputeForward(
+            out_linear_weights_fp[i], &fmha_out, nullptr, buf1, nullptr);
+        }
         AllReduce<T>(*buf1, ring_id, buf1->numel(), dev_ctx);
       } else {
-        out_linear_compute.ComputeForwardDyquant(
-            out_linear_weights[i],
-            &fmha_out,
-            &input_workspace,
-            nullptr,
-            buf0,
-            &output_workspace,
-            nullptr,
-            out_linear_out_scales[i],
-            "out_linear_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
-            quant_round_type,
-            quant_max_bound,
-            quant_min_bound);
+        if (!skip_quant) {
+          out_linear_compute.ComputeForwardDyquant(
+              out_linear_weights[i],
+              &fmha_out,
+              &input_workspace,
+              nullptr,
+              buf0,
+              &output_workspace,
+              nullptr,
+              out_linear_out_weight_ranges[i],
+              "out_linear_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value));
+        } else {
+          // out_linear_compute.ComputeForwardSkipQuant(
+          //     out_linear_weights_fp[i],
+          //     &fmha_out,
+          //     out_linear_out_weight_ranges[i],
+          //     buf0,
+          //     "out_linear_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value));
+
+        out_linear_compute_fp16.ComputeForward(
+            out_linear_weights_fp[i], &fmha_out, nullptr, buf0, nullptr);
+        }
         AllReduce<T>(*buf0, ring_id, buf0->numel(), dev_ctx);
       }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
@@ -577,19 +645,28 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
 #endif
 
       // step6. ffn matmul1
-      ffn1_linear_compute.ComputeForwardDyquant(
-          ffn1_weights[i],
-            buf1,
-            &input_workspace,
-            nullptr,
-            &ffn1_out,
-            &output_workspace,
-            nullptr,
-            ffn1_out_scales[i],
-            "ffn1_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
-            quant_round_type,
-            quant_max_bound,
-            quant_min_bound);
+      if (!skip_quant) {
+        ffn1_linear_compute.ComputeForwardDyquant(
+            ffn1_weights[i],
+              buf1,
+              &input_workspace,
+              nullptr,
+              &ffn1_out,
+              &output_workspace,
+              nullptr,
+              ffn1_weight_ranges[i],
+              "ffn1_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value));
+      } else {
+        // ffn1_linear_compute.ComputeForwardSkipQuant(
+        //       ffn1_weights_fp[i],
+        //       buf1,
+        //       ffn1_weight_ranges[i],
+        //       &ffn1_out,
+        //       "ffn1_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value));
+
+      ffn1_linear_compute_fp16.ComputeForward(
+          ffn1_weights_fp[i], buf1, nullptr, &ffn1_out, nullptr);
+      }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step6";
 #endif
@@ -608,20 +685,30 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
 
       // step8. ffn matmul2
       if (pre_layer_norm) {
-        ffn2_linear_compute.ComputeForwardDyquant(
-            ffn2_weights[i],
-            &ffn1_dropout_out,
-            &input_workspace,
-            nullptr,
-            buf1,
-            &output_workspace,
-            nullptr,
-            ffn2_out_scales[i],
-            "ffn2_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
-            quant_round_type,
-            quant_max_bound,
-            quant_min_bound);
+        if (!skip_quant) {
+          ffn2_linear_compute.ComputeForwardDyquant(
+              ffn2_weights[i],
+              &ffn1_dropout_out,
+              &input_workspace,
+              nullptr,
+              buf1,
+              &output_workspace,
+              nullptr,
+              ffn2_weight_ranges[i],
+              "ffn2_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value));
+        } else {
+          // ffn1_linear_compute.ComputeForwardSkipQuant(
+          //     ffn2_weights_fp[i],
+          //     &ffn1_dropout_out,
+          //     ffn2_weight_ranges[i],
+          //     buf1,
+          //     "ffn2_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value));
+
+        ffn2_linear_compute_fp16.ComputeForward(
+            ffn2_weights_fp[i], &ffn1_dropout_out, nullptr, buf1, nullptr);
+        }
       } else {
+        if (!skip_quant) {
         ffn2_linear_compute.ComputeForwardDyquant(
             ffn2_weights[i],
             &ffn1_dropout_out,
@@ -630,11 +717,18 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
             buf0,
             &output_workspace,
             nullptr,
-            ffn2_out_scales[i],
-            "ffn2_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
-            quant_round_type,
-            quant_max_bound,
-            quant_min_bound);
+            ffn2_weight_ranges[i],
+            "ffn2_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value));
+        } else {
+          // ffn1_linear_compute.ComputeForwardSkipQuant(
+          //     ffn2_weights_fp[i],
+          //     &ffn1_dropout_out,
+          //     ffn2_weight_ranges[i],
+          //     buf0,
+          //     "ffn2_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value));
+        ffn2_linear_compute_fp16.ComputeForward(
+            ffn2_weights_fp[i], &ffn1_dropout_out, nullptr, buf0, nullptr);
+        }
       }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step8.0";
@@ -703,6 +797,7 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
       }
       // PADDLE_THROW(platform::errors::Unimplemented("STOP"));
     }
+    decode_cnt++;
   }
 };
 

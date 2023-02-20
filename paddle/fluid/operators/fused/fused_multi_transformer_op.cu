@@ -782,6 +782,7 @@ class FusedMultiTransformerOpKernel : public framework::OpKernel<T> {
     auto ffn2_biases = ctx.MultiInput<phi::DenseTensor>("FFN2Bias");
     auto ffn2_linear_compute = AttnMatMul<T>(
         dev_ctx, false, false, bsz_seq, dim_embed, dim_ffn, false);
+        
 
     // 9. ffn2 residual bias
     DropoutParam ffn2_dropout_param(true, 0, true, true, 0.0, nullptr, 0);

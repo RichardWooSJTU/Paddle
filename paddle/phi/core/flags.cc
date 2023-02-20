@@ -200,6 +200,12 @@ PADDLE_DEFINE_EXPORTED_int64(
     " epilogue algorithms, default is 0, means disabling exhaustive search.");
 #endif
 
+PADDLE_DEFINE_EXPORTED_int64(
+    skip_dynamic_quant,
+    0,
+    "The times of exhaustive search for cuBlasLt matmul with/without "
+    " epilogue algorithms, default is 0, means disabling exhaustive search.");
+
 #if defined(PADDLE_WITH_ASCEND_CL)
 PADDLE_DEFINE_EXPORTED_string(
     selected_npus,

@@ -166,6 +166,7 @@ class FusedMultiTransformerDyquantOpOpMaker
              "H. Here, H represents the last dimension of its input tensor.")
         .AsDuplicable();
     AddInput("QKVW", "The qkv weight tensor.").AsDuplicable();
+    AddInput("QKVWFP", "The qkv weight tensor.").AsDuplicable();
     AddInput("QKVBias", "The qkv bias tensor.").AsDispensable().AsDuplicable();
     AddInput("CacheKV", "(optional) The cached KV for generation inference.")
         .AsDispensable()
@@ -184,6 +185,7 @@ class FusedMultiTransformerDyquantOpOpMaker
     AddInput("SrcMask", "(optional) The attention mask tensor in fmha.")
         .AsDispensable();
     AddInput("OutLinearW", "The out_linear weight tensor.").AsDuplicable();
+    AddInput("OutLinearWFP", "The out_linear weight tensor.").AsDuplicable();
     AddInput("OutLinearBias", "The out_linear bias tensor.")
         .AsDispensable()
         .AsDuplicable();
@@ -194,10 +196,14 @@ class FusedMultiTransformerDyquantOpOpMaker
         .AsDuplicable();
     AddInput("FFN1Weight", "The linear1 weight of FusedFeedForward op")
         .AsDuplicable();
+    AddInput("FFN1WeightFP", "The linear1 weight of FusedFeedForward op")
+        .AsDuplicable();
     AddInput("FFN1Bias", "The linear1 bias of FusedFeedForward op")
         .AsDispensable()
         .AsDuplicable();
     AddInput("FFN2Weight", "The linear2 weight of FusedFeedForward op")
+        .AsDuplicable();
+    AddInput("FFN2WeightFP", "The linear2 weight of FusedFeedForward op")
         .AsDuplicable();
     AddInput("FFN2Bias", "The linear2 bias input of FusedFeedForward op")
         .AsDispensable()

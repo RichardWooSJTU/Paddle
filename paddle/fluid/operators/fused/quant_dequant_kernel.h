@@ -41,9 +41,9 @@ constexpr int DequantKernelVecSize = 4;
 template <typename T>
 __forceinline__ __device__ int8_t quant_helper(const T input,
                                                const float scale,
-                                               const int round_type,
-                                               const float max_bound,
-                                               const float min_bound) {
+                                               const int round_type=1,
+                                               const float max_bound=127.0f,
+                                               const float min_bound=-127.0f) {
   float quant_value = max_bound * scale * static_cast<float>(input);
 
   if (round_type == 0) {
@@ -62,10 +62,7 @@ __global__ void quantize_kernel(const T* input,
                                 const float scale,
                                 const T* quant_in_scale_gpu,
                                 const int m,
-                                const int n,
-                                const int round_type,
-                                const float max_bound,
-                                const float min_bound) {
+                                const int n) {
   int n_id = (blockIdx.x * blockDim.x + threadIdx.x) << 2;
   int m_id = blockIdx.y * blockDim.y + threadIdx.y;
 
@@ -86,25 +83,13 @@ __global__ void quantize_kernel(const T* input,
   if (check) {
     char4 tmp;
     tmp.x = quant_helper(input[m_id * n + n_id],
-                         quant_in_scale,
-                         round_type,
-                         max_bound,
-                         min_bound);
+                         quant_in_scale);
     tmp.y = quant_helper(input[m_id * n + n_id + 1],
-                         quant_in_scale,
-                         round_type,
-                         max_bound,
-                         min_bound);
+                         quant_in_scale);
     tmp.z = quant_helper(input[m_id * n + n_id + 2],
-                         quant_in_scale,
-                         round_type,
-                         max_bound,
-                         min_bound);
+                         quant_in_scale);
     tmp.w = quant_helper(input[m_id * n + n_id + 3],
-                         quant_in_scale,
-                         round_type,
-                         max_bound,
-                         min_bound);
+                         quant_in_scale);
     output[(m_id * n + n_id) >> 2] = tmp;
   }
 }
@@ -116,9 +101,6 @@ void quantize_kernel_launcher(const T* input,
                               const T* quant_in_scale_gpu,
                               const int m,
                               const int n,
-                              const int round_type,
-                              const float max_bound,
-                              const float min_bound,
                               gpuStream_t stream) {
   // TODO(minghaoBD): optimize the kennel launch times when m==1 or n==1
   dim3 grid((n >> 2 + 31) / 32, (m + 31) / 32);
@@ -129,10 +111,7 @@ void quantize_kernel_launcher(const T* input,
                                               scale,
                                               quant_in_scale_gpu,
                                               m,
-                                              n,
-                                              round_type,
-                                              max_bound,
-                                              min_bound);
+                                              n);
 }
 
 template <typename T, int VecSize>
@@ -199,6 +178,78 @@ void dequantize_kernel_launcher(const int32_t* input,
           quant_in_scale,
           quant_in_scale_gpu,
           dequant_out_scale_data);
+}
+
+template <typename T, int VecSize>
+__global__ void dequantize_kernel_for_dynamic(T* output,
+                                  const int32_t* input,
+                                  const int m,  // batch size
+                                  const int n,  // hidden
+                                  const T* input_range,
+                                  const float* weight_range) {
+  int numel = m * n;
+  int stride = blockDim.x * gridDim.x * VecSize;
+  int idx = (blockIdx.x * blockDim.x + threadIdx.x) * VecSize;
+  int raw_id = idx / n;
+  int col_id = idx % n;
+
+  phi::AlignedVector<int32_t, VecSize> in_vec;
+  phi::AlignedVector<float, VecSize> weight_range_vec;
+  phi::AlignedVector<T, VecSize> out_vec;
+
+  float real_quant_in_scale = static_cast<float>(input_range[raw_id]) / 127.0f;
+
+  for (; idx < numel; idx += stride) {
+    phi::Load<int32_t, VecSize>(input + idx, &in_vec);
+    phi::Load<float, VecSize>(weight_range + col_id, &weight_range_vec);
+
+#pragma unroll
+    for (int i = 0; i < VecSize; ++i) {
+        out_vec[i] = static_cast<T>(static_cast<float>(in_vec[i]) *
+                                    real_quant_in_scale * weight_range_vec[i] / 127.0f);
+    }
+
+    phi::Store<T, VecSize>(out_vec, output + idx);
+  }
+}
+
+template <typename T>
+void LaunchDequantKernelForDynamic(const int32_t* input,
+                                T* output,
+                                const int m,  // m
+                                const int n,  // n
+                                gpuStream_t stream,
+                                GpuLaunchConfig* gpu_config,
+                                const T* input_range,
+                                const float* weight_range) {
+  VLOG(1) << "Launch dequantize_kernel";
+  dequantize_kernel_for_dynamic<T, DequantKernelVecSize>
+      <<<gpu_config->block_per_grid, gpu_config->thread_per_block, 0, stream>>>(
+          output,
+          input,
+          m,
+          n,
+          input_range,
+          weight_range);
+}
+
+template <typename T>
+__global__ void dequant_weight_kernel(T* output,
+                                  const int8_t* input,
+                                  const int k,
+                                  const int n,  // hidden
+                                  const float* weight_range ) { // [n]
+  int numel = k * n;
+  int stride = blockDim.x * gridDim.x;
+  int idx = (blockIdx.x * blockDim.x + threadIdx.x);
+
+
+  for (; idx < numel; idx += stride) {
+    int raw_id = idx % k;
+    int col_id = idx / k;
+    output[idx] =
+        static_cast<T>(static_cast<float>(input[idx]) * weight_range[col_id] / 127.0f);
+  }
 }
 
 template <typename T>
