@@ -44,13 +44,13 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
     // auto out_linear_out_scales =
     //     ctx.MultiInput<phi::DenseTensor>("OutLinearOutScale");
     // auto ffn1_out_scales = ctx.MultiInput<phi::DenseTensor>("FFN1OutScale");
-    // auto ffn2_out_scales = ctx.MultiInput<phi::DenseTensor>("FFN2OutScale");
+    auto ffn2_out_scales = ctx.MultiInput<phi::DenseTensor>("FFN2OutScale");
 
     auto qkv_weight_ranges = ctx.MultiInput<phi::DenseTensor>("QKVOutScale");
     auto out_linear_out_weight_ranges =
         ctx.MultiInput<phi::DenseTensor>("OutLinearOutScale");
-    auto ffn1_out_weight_ranges= ctx.MultiInput<phi::DenseTensor>("FFN1OutScale");
-    auto ffn2_out_weight_ranges = ctx.MultiInput<phi::DenseTensor>("FFN2OutScale");
+    auto ffn1_weight_ranges= ctx.MultiInput<phi::DenseTensor>("FFN1OutScale");
+    // auto ffn2_weight_ranges = ctx.MultiInput<phi::DenseTensor>("FFN2OutScale");
 
     // 1. layer norm
     const auto pre_layer_norm = ctx.Attr<bool>("pre_layer_norm");
@@ -322,33 +322,51 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
       // NOTE: in decoder stage, bias is fused in fmha
       const phi::DenseTensor *bias = time_step ? nullptr : qkv_bias;
       if (!pre_layer_norm && i == 0) {
-        qkv_compute.ComputeForwardDyquant(
-            qkv_weights[i],
-            input_x,
-            &input_workspace,
-            bias,
-            &qkv_out,
-            &output_workspace,
-            &qkv_out,
-            qkv_out_scales[i],
-            "qkv_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
-            quant_round_type,
-            quant_max_bound,
-            quant_min_bound);
+        // qkv_compute.ComputeForwardDyquant(
+        //     qkv_weights[i],
+        //     input_x,
+        //     &input_workspace,
+        //     bias,
+        //     &qkv_out,
+        //     &output_workspace,
+        //     &qkv_out,
+        //     qkv_out_scales[i],
+        //     "qkv_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
+        //     quant_round_type,
+        //     quant_max_bound,
+        //     quant_min_bound);
+        LLMGemm<T>(dev_ctx, 
+             qkv_weights[i],
+             input_x,
+             qkv_weight_ranges[i], 
+             &qkv_out,
+             "qkv_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
+             bsz_seq, input_size, output_size, quant_round_type,
+             quant_max_bound,
+             quant_min_bound);
       } else {
-        qkv_compute.ComputeForwardDyquant(
-           qkv_weights[i],
-            buf1,
-            &input_workspace,
-            bias,
-            &qkv_out,
-            &output_workspace,
-            &qkv_out,
-            qkv_out_scales[i],
-            "qkv_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
-            quant_round_type,
-            quant_max_bound,
-            quant_min_bound);
+        // qkv_compute.ComputeForwardDyquant(
+        //    qkv_weights[i],
+        //     buf1,
+        //     &input_workspace,
+        //     bias,
+        //     &qkv_out,
+        //     &output_workspace,
+        //     &qkv_out,
+        //     qkv_out_scales[i],
+        //     "qkv_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
+        //     quant_round_type,
+        //     quant_max_bound,
+        //     quant_min_bound);
+          LLMGemm<T>(dev_ctx, 
+             qkv_weights[i],
+             buf1,
+             qkv_weight_ranges[i], 
+             &qkv_out,
+             "qkv_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
+             bsz_seq, input_size, output_size, quant_round_type,
+             quant_max_bound,
+             quant_min_bound);
       }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step2";
@@ -507,34 +525,54 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
 #endif
 
       if (pre_layer_norm) {
-        out_linear_compute.ComputeForwardDyquant(
-            out_linear_weights[i],
-            &fmha_out,
-            &input_workspace,
-            nullptr,
-            buf1,
-            &output_workspace,
-            nullptr,
-            out_linear_out_scales[i],
-            "out_linear_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
-            quant_round_type,
-            quant_max_bound,
-            quant_min_bound);
+        // out_linear_compute.ComputeForwardDyquant(
+        //     out_linear_weights[i],
+        //     &fmha_out,
+        //     &input_workspace,
+        //     nullptr,
+        //     buf1,
+        //     &output_workspace,
+        //     nullptr,
+        //     out_linear_out_scales[i],
+        //     "out_linear_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
+        //     quant_round_type,
+        //     quant_max_bound,
+        //     quant_min_bound);
+        LLMGemm<T>(dev_ctx, 
+             out_linear_weights[i],
+             &fmha_out,
+             out_linear_out_weight_ranges[i], 
+             buf1,
+             "out_linear_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
+             bsz_seq, hidden_size, dim_embed, 
+             quant_round_type,
+             quant_max_bound,
+             quant_min_bound);
         AllReduce<T>(*buf1, ring_id, buf1->numel(), dev_ctx);
       } else {
-        out_linear_compute.ComputeForwardDyquant(
-            out_linear_weights[i],
-            &fmha_out,
-            &input_workspace,
-            nullptr,
-            buf0,
-            &output_workspace,
-            nullptr,
-            out_linear_out_scales[i],
-            "out_linear_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
-            quant_round_type,
-            quant_max_bound,
-            quant_min_bound);
+        // out_linear_compute.ComputeForwardDyquant(
+        //     out_linear_weights[i],
+        //     &fmha_out,
+        //     &input_workspace,
+        //     nullptr,
+        //     buf0,
+        //     &output_workspace,
+        //     nullptr,
+        //     out_linear_out_scales[i],
+        //     "out_linear_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
+        //     quant_round_type,
+        //     quant_max_bound,
+        //     quant_min_bound);
+        LLMGemm<T>(dev_ctx, 
+             out_linear_weights[i],
+             &fmha_out,
+             out_linear_out_weight_ranges[i], 
+             buf0,
+             "out_linear_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
+             bsz_seq, hidden_size, dim_embed, 
+             quant_round_type,
+             quant_max_bound,
+             quant_min_bound);
         AllReduce<T>(*buf0, ring_id, buf0->numel(), dev_ctx);
       }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
@@ -583,19 +621,29 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
 #endif
 
       // step6. ffn matmul1
-      ffn1_linear_compute.ComputeForwardDyquant(
-          ffn1_weights[i],
-            buf1,
-            &input_workspace,
-            nullptr,
-            &ffn1_out,
-            &output_workspace,
-            nullptr,
-            ffn1_out_scales[i],
-            "ffn1_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
-            quant_round_type,
-            quant_max_bound,
-            quant_min_bound);
+      // ffn1_linear_compute.ComputeForwardDyquant(
+      //     ffn1_weights[i],
+      //       buf1,
+      //       &input_workspace,
+      //       nullptr,
+      //       &ffn1_out,
+      //       &output_workspace,
+      //       nullptr,
+      //       ffn1_out_scales[i],
+      //       "ffn1_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
+      //       quant_round_type,
+      //       quant_max_bound,
+      //       quant_min_bound);
+      LLMGemm<T>(dev_ctx, 
+             ffn1_weights[i],
+             buf1,
+             ffn1_weight_ranges[i], 
+             &ffn1_out,
+             "ffn1_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
+             bsz_seq, dim_embed, dim_ffn, 
+             quant_round_type,
+             quant_max_bound,
+             quant_min_bound);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step6";
 #endif
