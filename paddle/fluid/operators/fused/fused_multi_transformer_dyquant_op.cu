@@ -292,6 +292,10 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
       buf1 = out;
     }
 
+    phi::DenseTensor cublaslt_workspace;
+    cublaslt_workspace.Resize({{3000000}});
+    dev_ctx.Alloc<int8_t>(&cublaslt_workspace);
+
     for (int i = 0; i < layers; ++i) {
       // step1. layer_norm
       if (i == 0 && pre_layer_norm) {
@@ -341,7 +345,9 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
              qkv_weight_ranges[i], 
              &qkv_out,
              "qkv_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
-             bsz_seq, input_size, output_size, quant_round_type,
+             bsz_seq, input_size, output_size, 
+             &cublaslt_workspace,
+             quant_round_type,
              quant_max_bound,
              quant_min_bound);
       } else {
@@ -364,7 +370,9 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
              qkv_weight_ranges[i], 
              &qkv_out,
              "qkv_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
-             bsz_seq, input_size, output_size, quant_round_type,
+             bsz_seq, input_size, output_size, 
+             &cublaslt_workspace,
+             quant_round_type,
              quant_max_bound,
              quant_min_bound);
       }
@@ -545,6 +553,7 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
              buf1,
              "out_linear_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
              bsz_seq, hidden_size, dim_embed, 
+             &cublaslt_workspace,
              quant_round_type,
              quant_max_bound,
              quant_min_bound);
@@ -570,6 +579,7 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
              buf0,
              "out_linear_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
              bsz_seq, hidden_size, dim_embed, 
+             &cublaslt_workspace,
              quant_round_type,
              quant_max_bound,
              quant_min_bound);
@@ -641,6 +651,7 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
              &ffn1_out,
              "ffn1_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
              bsz_seq, dim_embed, dim_ffn, 
+             &cublaslt_workspace,
              quant_round_type,
              quant_max_bound,
              quant_min_bound);

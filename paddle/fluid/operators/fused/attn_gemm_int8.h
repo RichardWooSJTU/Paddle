@@ -34,7 +34,7 @@ namespace operators {
 
 template <typename T>
 static void PrintMatrix(const T* mat_d, int num, std::string name) {
-  if (FLAGS_cublaslt_exhaustive_search_times == 0) return;
+  if (FLAGS_cublaslt_exhaustive_search_times != 114514) return;
 
     std::vector<T> tmp(num);
     cudaMemcpy(tmp.data(), mat_d, sizeof(T) * num, cudaMemcpyDeviceToHost);
@@ -64,35 +64,52 @@ void LLMGemm(const phi::GPUContext& dev_ctx,
              phi::DenseTensor* output,
              std::string name,
              int m, int k, int n,
+             phi::DenseTensor* workspace,
              const int quant_round_type = 1,
              const float quant_max_bound = 127.0,
              const float quant_min_bound = -127.0,
              const float threshold = 6.0f) {
+  auto weight_dims = weight->dims();
+  auto input_dims = input->dims();
+  VLOG(1) << "weight_dims " << weight_dims;
+  VLOG(1) << "input_dims " << input_dims;
+  phi::DenseTensor weight_tmp;
+  weight_tmp.Resize({n, k});
+  dev_ctx.Alloc<int8_t>(&weight_tmp);
+
+  phi::DenseTensor input_tmp;
+  input_tmp.Resize({m, k});
+  dev_ctx.Alloc<T>(&input_tmp);
+
+  cudaMemcpy(weight_tmp.data<int8_t>(), weight->data<int8_t>(), n * k * sizeof(int8_t), cudaMemcpyDeviceToDevice);
+  cudaMemcpy(input_tmp.data<T>(), input->data<T>(), m * k * sizeof(T), cudaMemcpyDeviceToDevice);
+
+ 
   // 1. raw/col range
-  phi::DenseTensor tmp;
-  tmp.Resize(input->dims());
-  dev_ctx.Alloc<T>(&tmp, input->numel() * sizeof(T));
-  phi::AbsKernel<T>(dev_ctx, *input, &tmp);
+  phi::DenseTensor abs_input;
+  abs_input.Resize(input->dims());
+  dev_ctx.Alloc<T>(&abs_input);
+  phi::AbsKernel<T>(dev_ctx, *input, &abs_input);
 
   if (input->dims().size() == 3) {
-    tmp.Resize({input->dims()[0] * input->dims()[1], input->dims()[2]});
+    abs_input.Resize({input->dims()[0] * input->dims()[1], input->dims()[2]});
   }
 
-  phi::DenseTensor raw_range;
-  raw_range.Resize({m});
-  dev_ctx.Alloc<T>(&raw_range, m * sizeof(T));
+  // phi::DenseTensor raw_range;
+  // raw_range.Resize({m});
+  // dev_ctx.Alloc<T>(&raw_range);
 
-  std::vector<int64_t> raw_dims{-1};
-  phi::MaxRawKernel<T>(dev_ctx, tmp, raw_dims, false, false, &raw_range);
+  // std::vector<int64_t> raw_dims{-1};
+  // phi::MaxRawKernel<T>(dev_ctx, tmp, raw_dims, false, false, &raw_range);
 
   phi::DenseTensor col_range;
   col_range.Resize({k});
-  dev_ctx.Alloc<T>(&col_range, k * sizeof(T));
+  dev_ctx.Alloc<T>(&col_range);
 
 
   std::vector<int64_t> col_dims{0};
-  phi::MaxRawKernel<T>(dev_ctx, tmp, col_dims, false, false, &col_range);
-
+  phi::MaxRawKernel<T>(dev_ctx, abs_input, col_dims, false, false, &col_range);
+  VLOG(1) << "Finish max raw kernel";
 
   // 2. fetch col_ids and slice
 
@@ -103,16 +120,27 @@ void LLMGemm(const phi::GPUContext& dev_ctx,
   cudaMemcpy(col_range_vec.data(), col_range.data<T>(), k * sizeof(T), cudaMemcpyDeviceToHost);
   for (int64_t i = 0; i < k; ++i) {
     if (static_cast<float>(col_range_vec[i]) >= threshold) {
-      VLOG(1) << i << " need to fallback";
       fp16_index_vec.push_back(i);
     } else {
-      VLOG(1) << i << " no need fallback";
       int8_index_vec.push_back(i);
     }
   }
 
   int k_fp16 = fp16_index_vec.size();
   int k_int8 = k - k_fp16;
+
+  int k_int8_supp = k_int8 % 4;
+  if (k_int8_supp != 0) {
+    for (int i = 0; i < k_int8_supp; ++i) {
+      fp16_index_vec.push_back(int8_index_vec[k_int8-1]);
+      int8_index_vec.pop_back();
+      k_int8--;
+      k_fp16++;
+    }
+  }
+
+  VLOG(1) << "k_fp16 " << k_fp16;
+  VLOG(1) << "k_int8 " << k_int8;
 
 
   phi::DenseTensor int8_out_dequant;
@@ -121,7 +149,7 @@ void LLMGemm(const phi::GPUContext& dev_ctx,
   if (k_fp16 != 0) {
     phi::DenseTensor fp16_index;
     fp16_index.Resize({k_fp16});
-    dev_ctx.Alloc<int64_t>(&fp16_index, k_fp16 * sizeof(int64_t));
+    dev_ctx.Alloc<int64_t>(&fp16_index);
     cudaMemcpy(fp16_index.data<int64_t>(), fp16_index_vec.data(), k_fp16 * sizeof(int64_t), cudaMemcpyHostToDevice);
 
     phi::DenseTensor fp16_in;
@@ -130,22 +158,23 @@ void LLMGemm(const phi::GPUContext& dev_ctx,
     phi::DenseTensor fp16_weight_dequant;
     fp16_weight.Resize({n, k_fp16});
     fp16_weight_dequant.Resize({n, k_fp16});
-    dev_ctx.Alloc<T>(&fp16_weight_dequant, n * k_fp16 * sizeof(T));
+    dev_ctx.Alloc<T>(&fp16_weight_dequant);
 
-    phi::IndexSelectKernel<T>(dev_ctx, tmp, fp16_index, 1, &fp16_in);
-    phi::IndexSelectKernel<int8_t>(dev_ctx, *weight, fp16_index, 1, &fp16_weight);
+    phi::IndexSelectKernel<T>(dev_ctx, input_tmp, fp16_index, 1, &fp16_in);
+    phi::IndexSelectKernel<int8_t>(dev_ctx, weight_tmp, fp16_index, 1, &fp16_weight);
 
     // 3. fp16 matmul
     // 3.1 dequant weight
     auto gpu_config_weight = std::make_unique<GpuLaunchConfig>(
           phi::backends::gpu::GetGpuLaunchConfig1D(
-              dev_ctx, k_fp16 * n, DequantKernelVecSize));
-    dequant_weight_kernel<T, DequantKernelVecSize><<<gpu_config_weight->block_per_grid, gpu_config_weight->thread_per_block, 0,  dev_ctx.stream()>>>(
+              dev_ctx, k_fp16 * n));
+    dequant_weight_kernel<T><<<gpu_config_weight->block_per_grid, gpu_config_weight->thread_per_block, 0,  dev_ctx.stream()>>>(
       fp16_weight_dequant.data<T>(),
       fp16_weight.data<int8_t>(),
       k_fp16, n, 
       weight_range->data<float>()
     );
+    VLOG(1) << "dequant weight";
     // 3.2 matmul
       CBLAS_TRANSPOSE transA = CblasNoTrans;
       CBLAS_TRANSPOSE transB = CblasTrans;
@@ -154,7 +183,7 @@ void LLMGemm(const phi::GPUContext& dev_ctx,
 
       // (m, n, k) = bsz_seq, output_size, input_size, (input, weight, out)
       fp16_out.Resize(output->dims());
-      dev_ctx.Alloc<T>(&fp16_out, fp16_out.numel() * sizeof(T));
+      dev_ctx.Alloc<T>(&fp16_out);
       auto blas = phi::funcs::GetBlas<phi::GPUContext, T>(dev_ctx);
       blas.GEMM(transA,
                 transB,
@@ -166,18 +195,16 @@ void LLMGemm(const phi::GPUContext& dev_ctx,
                 fp16_weight_dequant.data<T>(),
                 beta,
                 fp16_out.data<T>());
-
-
+    VLOG(1) << "fp16 matmul";
   }
 
   if (k_int8 != 0) {
     phi::DenseTensor int8_index;
     int8_index.Resize({k_int8});
-    dev_ctx.Alloc<int64_t>(&int8_index, k_int8 * sizeof(int64_t));
+    dev_ctx.Alloc<int64_t>(&int8_index);
     cudaMemcpy(int8_index.data<int64_t>(), int8_index_vec.data(), k_int8 * sizeof(int64_t), cudaMemcpyHostToDevice);
 
     phi::DenseTensor int8_in;
-    // dev_ctx.Alloc<T>(&fp16_in, m * k_fp16 * sizeof(T));
     int8_in.Resize({m, k_int8});
     // dev_ctx.Alloc<T>(&int8_in, m * k_int8 * sizeof(T));
 
@@ -187,20 +214,29 @@ void LLMGemm(const phi::GPUContext& dev_ctx,
     int8_weight.Resize({n, k_int8});
     // dev_ctx.Alloc<int8_t>(&int8_weight, n * k_int8 * sizeof(int8_t));
     
-    phi::IndexSelectKernel<T>(dev_ctx, tmp, int8_index, 1, &int8_in);
-    phi::IndexSelectKernel<int8_t>(dev_ctx, *weight, int8_index, 1, &int8_weight);
+    phi::IndexSelectKernel<T>(dev_ctx, input_tmp, int8_index, 1, &int8_in);
+    phi::IndexSelectKernel<int8_t>(dev_ctx, weight_tmp, int8_index, 1, &int8_weight);
 
-    
+    VLOG(1) << "select int8";
 
     // 4. int8 matmul
     phi::DenseTensor int8_in_tmp;
     int8_in_tmp.Resize(int8_in.dims());
-    dev_ctx.Alloc<int8_t>(&int8_in_tmp, int8_in_tmp.numel() * sizeof(int8_t));
+    dev_ctx.Alloc<int8_t>(&int8_in_tmp);
     phi::DenseTensor int8_out;
     int8_out.Resize(output->dims());
-    dev_ctx.Alloc<int32_t>(&int8_out, int8_out.numel() * sizeof(int32_t));
+    dev_ctx.Alloc<int32_t>(&int8_out);
     int8_out_dequant.Resize(output->dims());
-    dev_ctx.Alloc<T>(&int8_out_dequant, int8_out_dequant.numel() * sizeof(T));
+    dev_ctx.Alloc<T>(&int8_out_dequant);
+
+
+    phi::DenseTensor raw_range;
+    raw_range.Resize({m});
+    dev_ctx.Alloc<T>(&raw_range);
+
+    std::vector<int64_t> raw_dims{-1};
+    phi::MaxRawKernel<T>(dev_ctx, int8_in, raw_dims, false, false, &raw_range);
+
     quantize_kernel_launcher<T>(int8_in.data<T>(),
                                 int8_in_tmp.data<int8_t>(),
                                   0,
@@ -211,11 +247,18 @@ void LLMGemm(const phi::GPUContext& dev_ctx,
                                   quant_max_bound,
                                   quant_min_bound,
                                   dev_ctx.stream());
-    auto helper = std::make_shared<CublasLtHelper>(m, k_int8, n, dev_ctx.cublaslt_handle());
+    VLOG(1) << "quant";                              
+    auto helper = std::make_unique<CublasLtHelper<int32_t>>(m, k_int8, n, dev_ctx.cublaslt_handle());
+    VLOG(1) << "int8_in_tmp.dims() " << int8_in_tmp.dims();
+    VLOG(1) << "int8_weight.dims() " << int8_weight.dims();
+    VLOG(1) << "int8_out.dims() " << int8_out.dims();
     helper->GEMM(int8_in_tmp.data<int8_t>(),
                 int8_weight.data<int8_t>(),
                   int8_out.data<int32_t>(),
-                  dev_ctx.stream());
+                  dev_ctx.stream(),
+                  (void*)workspace->data<int8_t>(),
+                  workspace->numel());
+    VLOG(1) << "int8 GEMM";              
     auto gpu_config = std::make_unique<GpuLaunchConfig>(
           phi::backends::gpu::GetGpuLaunchConfig1D(
               dev_ctx, m * n, DequantKernelVecSize));             
@@ -226,6 +269,7 @@ void LLMGemm(const phi::GPUContext& dev_ctx,
       raw_range.data<T>(),
       weight_range->data<float>()
     );
+    VLOG(1) << "dequant";            
   }
 
   if (k_fp16 > 0 && k_int8 > 0) {
@@ -240,9 +284,6 @@ void LLMGemm(const phi::GPUContext& dev_ctx,
     cudaMemcpy(output->data<T>(), int8_out_dequant.data<T>(), output->numel() * sizeof(T), cudaMemcpyDeviceToDevice);
   }
 
-  
-  
-      
 }
 
 template <typename T>
@@ -251,8 +292,7 @@ class AttnMatmulINT8 {
   AttnMatmulINT8(
       const phi::GPUContext& dev_ctx, int m, int n, int k, bool compute_bias)
       : dev_ctx_(dev_ctx), m_(m), n_(n), k_(k), compute_bias_(compute_bias) {
-    auto helper = std::make_shared<CublasLtHelper>(m, k, n, dev_ctx.cublaslt_handle());
-    helpers_.emplace_back(helper);
+    helper_ = std::make_unique<CublasLtHelper<int32_t>>(m, k, n, dev_ctx.cublaslt_handle());
     gpu_config_ = std::make_unique<GpuLaunchConfig>(
         phi::backends::gpu::GetGpuLaunchConfig1D(
             dev_ctx, m * n, DequantKernelVecSize));
@@ -310,7 +350,7 @@ class AttnMatmulINT8 {
     // PrintMatrix(input_tmp->data<int8_t>(), input->numel(), name + "_in_int8");  
     VLOG(1) << "end quantize_kernel_launcher";
 
-    helpers_[0]->GEMM(input_tmp->data<int8_t>(),
+    helper_->GEMM(input_tmp->data<int8_t>(),
                       weight->data<int8_t>(),
                       output_tmp->data<int32_t>(),
                       dev_ctx_.stream());
@@ -367,7 +407,7 @@ class AttnMatmulINT8 {
                                 quant_min_bound,
                                 dev_ctx_.stream());
 
-    helpers_[0]->GEMM(input_tmp->data<int8_t>(),
+    helper_->GEMM(input_tmp->data<int8_t>(),
                       weight->data<int8_t>(),
                       output_tmp->data<int32_t>(),
                       dev_ctx_.stream());
@@ -405,7 +445,7 @@ class AttnMatmulINT8 {
                                 phi::DenseTensor* output,
                                 phi::DenseTensor* bias_out,
                                 void* workspace = nullptr) {
-    helpers_[0]->GEMM(input->data<int8_t>(),
+    helper_->GEMM(input->data<int8_t>(),
                       weight->data<int8_t>(),
                       output->data<int32_t>(),
                       dev_ctx_.stream(),
@@ -422,7 +462,7 @@ class AttnMatmulINT8 {
                              phi::DenseTensor* output_tmp,
                              phi::DenseTensor* bias_out,
                              const phi::DenseTensor* dequant_out_scale) {
-    helpers_[0]->GEMM(input->data<int8_t>(),
+    helper_->GEMM(input->data<int8_t>(),
                       weight->data<int8_t>(),
                       output_tmp->data<int32_t>(),
                       dev_ctx_.stream());
@@ -475,7 +515,7 @@ class AttnMatmulINT8 {
                                 quant_min_bound,
                                 dev_ctx_.stream());
 
-    helpers_[0]->GEMM(input_tmp->data<int8_t>(),
+    helper_->GEMM(input_tmp->data<int8_t>(),
                       weight->data<int8_t>(),
                       output->data<int32_t>(),
                       dev_ctx_.stream());
@@ -489,7 +529,7 @@ class AttnMatmulINT8 {
   int k_;  // k
 
   int compute_bias_;
-  std::vector<std::shared_ptr<CublasLtHelper>> helpers_;
+  std::unique_ptr<CublasLtHelper<int32_t>> helper_;
   std::unique_ptr<GpuLaunchConfig> gpu_config_;
 };
 
