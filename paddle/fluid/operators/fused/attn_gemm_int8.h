@@ -163,6 +163,7 @@ class AttnMatmulINT8 {
                       phi::DenseTensor* bias_out,
                       const float quant_in_scale,
                       const phi::DenseTensor* dequant_out_scale,
+                      std::string name,
                       const int quant_round_type = 1,
                       const float quant_max_bound = 127.0,
                       const float quant_min_bound = -127.0) {
@@ -177,10 +178,13 @@ class AttnMatmulINT8 {
                                 quant_min_bound,
                                 dev_ctx_.stream());
 
+    PrintMatrix(input_tmp->data<int8_t>(), input->numel(), name + "_in_int" + "_device_" + std::to_string(dev_ctx_.GetPlace().GetDeviceId()));                            
+
     helpers_[0]->GEMM(input_tmp->data<int8_t>(),
                       weight->data<int8_t>(),
                       output_tmp->data<int32_t>(),
                       dev_ctx_.stream());
+    PrintMatrix(output_tmp->data<int32_t>(), output->numel(), name + "_out_int" + "_device_" + std::to_string(dev_ctx_.GetPlace().GetDeviceId())); 
 
     dequantize_kernel_launcher<T>(output_tmp->data<int32_t>(),
                                   output->data<T>(),
@@ -231,11 +235,15 @@ class AttnMatmulINT8 {
                              phi::DenseTensor* output,
                              phi::DenseTensor* output_tmp,
                              phi::DenseTensor* bias_out,
-                             const phi::DenseTensor* dequant_out_scale) {
+                             const phi::DenseTensor* dequant_out_scale,
+                             std::string name="") {
+    PrintMatrix(input->data<int8_t>(), m_ * k_, name + "_in_int" + "_device_" + std::to_string(dev_ctx_.GetPlace().GetDeviceId())); 
     helpers_[0]->GEMM(input->data<int8_t>(),
                       weight->data<int8_t>(),
                       output_tmp->data<int32_t>(),
                       dev_ctx_.stream());
+
+    PrintMatrix(output_tmp->data<int32_t>(), m_ * n_, name + "_out_int" + "_device_" + std::to_string(dev_ctx_.GetPlace().GetDeviceId()));                   
 
     dequantize_kernel_launcher<T>(output_tmp->data<int32_t>(),
                                   output->data<T>(),
@@ -246,6 +254,7 @@ class AttnMatmulINT8 {
                                   quant_in_scale,
                                   nullptr,
                                   dequant_out_scale->data<float>());
+    PrintMatrix(output->data<T>(),m_ * n_, name + "_out_fp" + "_device_" + std::to_string(dev_ctx_.GetPlace().GetDeviceId())); 
 
     if (compute_bias_) {
       // bias_out = output + bias
@@ -259,6 +268,8 @@ class AttnMatmulINT8 {
                             "cuda error occured after computing bias. "
                             "But it does not mean this error is caused by "
                             "bias computing"));
+      
+      // PrintMatrix(output->data<T>(),m_ * n_, name + "_out_fp_with_bias" + "_device_" + std::to_string(dev_ctx_.GetPlace().GetDeviceId()));                       
     }
   }
 
