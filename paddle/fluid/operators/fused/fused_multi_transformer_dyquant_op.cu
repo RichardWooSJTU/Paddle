@@ -12,6 +12,7 @@ limitations under the License. */
 
 #include "paddle/fluid/operators/fused/attn_gemm_int8.h"
 #include "paddle/fluid/operators/fused/fused_multi_transformer_op.cu.h"
+#include "paddle/fluid/operators/fused/llm_int8.h"
 
 namespace paddle {
 namespace operators {
@@ -344,12 +345,9 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
              input_x,
              qkv_weight_ranges[i], 
              &qkv_out,
-             "qkv_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
-             bsz_seq, input_size, output_size, 
              &cublaslt_workspace,
-             quant_round_type,
-             quant_max_bound,
-             quant_min_bound);
+             "qkv_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
+             bsz_seq, input_size, output_size);
       } else {
         // qkv_compute.ComputeForwardDyquant(
         //    qkv_weights[i],
@@ -369,12 +367,9 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
              buf1,
              qkv_weight_ranges[i], 
              &qkv_out,
-             "qkv_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
-             bsz_seq, input_size, output_size, 
              &cublaslt_workspace,
-             quant_round_type,
-             quant_max_bound,
-             quant_min_bound);
+             "qkv_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
+             bsz_seq, input_size, output_size);
       }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step2";
@@ -551,12 +546,9 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
              &fmha_out,
              out_linear_out_weight_ranges[i], 
              buf1,
-             "out_linear_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
-             bsz_seq, hidden_size, dim_embed, 
              &cublaslt_workspace,
-             quant_round_type,
-             quant_max_bound,
-             quant_min_bound);
+             "out_linear_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
+             bsz_seq, hidden_size, dim_embed);
         AllReduce<T>(*buf1, ring_id, buf1->numel(), dev_ctx);
       } else {
         // out_linear_compute.ComputeForwardDyquant(
@@ -577,12 +569,9 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
              &fmha_out,
              out_linear_out_weight_ranges[i], 
              buf0,
-             "out_linear_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
-             bsz_seq, hidden_size, dim_embed, 
              &cublaslt_workspace,
-             quant_round_type,
-             quant_max_bound,
-             quant_min_bound);
+             "out_linear_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
+             bsz_seq, hidden_size, dim_embed);
         AllReduce<T>(*buf0, ring_id, buf0->numel(), dev_ctx);
       }
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
@@ -649,12 +638,9 @@ class FusedMultiTransformerDyquantOpKernel : public framework::OpKernel<T> {
              buf1,
              ffn1_weight_ranges[i], 
              &ffn1_out,
-             "ffn1_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
-             bsz_seq, dim_embed, dim_ffn, 
              &cublaslt_workspace,
-             quant_round_type,
-             quant_max_bound,
-             quant_min_bound);
+             "ffn1_"+ std::to_string(i) + "_step_" + std::to_string(time_step_value),
+             bsz_seq, dim_embed, dim_ffn);
 #ifdef _DEBUG_FUSED_MULTI_TRANSFORMER
       VLOG(0) << "step6";
 #endif

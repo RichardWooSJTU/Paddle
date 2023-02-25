@@ -22,6 +22,7 @@ limitations under the License. */
 
 #include "paddle/fluid/framework/op_registry.h"
 #include "paddle/fluid/framework/operator.h"
+#include "paddle/fluid/operators/fused/datatype_traits.h"
 #include "paddle/fluid/operators/fused/attention_layer_norm.h"
 #include "paddle/fluid/operators/fused/attn_gemm.h"
 #include "paddle/fluid/operators/fused/fmha_ref.h"
@@ -95,20 +96,7 @@ using float16 = plat::float16;
 #define MMHA_USE_FP32_ACUM_FOR_FMA
 // #define MMHA_USE_HMMA_FOR_REDUCTION
 
-template <typename D>
-class PDDataTypeTraits;
 
-template <>
-class PDDataTypeTraits<float> {
- public:
-  typedef float DataType;
-};
-
-template <>
-class PDDataTypeTraits<float16> {
- public:
-  typedef half DataType;
-};
 
 template <typename T>
 struct Masked_multihead_attention_params {

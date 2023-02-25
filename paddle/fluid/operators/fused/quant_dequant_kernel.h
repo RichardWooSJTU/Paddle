@@ -142,7 +142,7 @@ __global__ void dequantize_kernel(T* output,
                                   const int n,  // hidden
                                   const float quant_in_scale,
                                   const T* quant_in_scale_gpu,
-                                  const float* dequant_out_scale_data) {
+                                  const T* dequant_out_scale_data) {
   int numel = m * n;
   int stride = blockDim.x * gridDim.x * VecSize;
   int idx = (blockIdx.x * blockDim.x + threadIdx.x) * VecSize;
@@ -150,7 +150,7 @@ __global__ void dequantize_kernel(T* output,
   int col_id = idx % n;
 
   phi::AlignedVector<int32_t, VecSize> in_vec;
-  phi::AlignedVector<float, VecSize> out_scale_vec;
+  phi::AlignedVector<T, VecSize> out_scale_vec;
   phi::AlignedVector<T, VecSize> out_vec;
 
   float real_quant_in_scale = 0;
@@ -162,16 +162,16 @@ __global__ void dequantize_kernel(T* output,
 
   for (; idx < numel; idx += stride) {
     phi::Load<int32_t, VecSize>(input + idx, &in_vec);
-    phi::Load<float, VecSize>(dequant_out_scale_data + col_id, &out_scale_vec);
+    phi::Load<T, VecSize>(dequant_out_scale_data + col_id, &out_scale_vec);
 
 #pragma unroll
     for (int i = 0; i < VecSize; ++i) {
       if (!quant_in_scale_gpu) {
         out_vec[i] =
-            static_cast<T>(static_cast<float>(in_vec[i]) * out_scale_vec[i]);
+            static_cast<T>(static_cast<float>(in_vec[i]) * static_cast<float>(out_scale_vec[i]));
       } else {
         out_vec[i] = static_cast<T>(static_cast<float>(in_vec[i]) *
-                                    real_quant_in_scale * out_scale_vec[i]);
+                                    real_quant_in_scale * static_cast<float>(out_scale_vec[i]));
       }
     }
 
@@ -239,7 +239,7 @@ void dequantize_kernel_launcher(const int32_t* input,
                                 GpuLaunchConfig* gpu_config,
                                 const float quant_in_scale,
                                 const T* quant_in_scale_gpu,
-                                const float* dequant_out_scale_data) {
+                                const T* dequant_out_scale_data) {
   VLOG(1) << "Launch dequantize_kernel";
   dequantize_kernel<T, DequantKernelVecSize>
       <<<gpu_config->block_per_grid, gpu_config->thread_per_block, 0, stream>>>(
