@@ -1020,3 +1020,7 @@ PADDLE_DEFINE_EXPORTED_bool(
 PADDLE_DEFINE_EXPORTED_string(jit_engine_type,
                               "Predictor",
                               "Choose default funciton type in JitLayer.");
+
+
+PADDLE_DEFINE_EXPORTED_bool(print_matrix, false, "");
+PADDLE_DEFINE_EXPORTED_int32(debug_layer_id, 0, "");

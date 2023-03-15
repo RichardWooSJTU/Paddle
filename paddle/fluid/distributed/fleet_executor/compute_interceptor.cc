@@ -19,6 +19,9 @@
 #include "paddle/fluid/framework/executor_gc_helper.h"
 #include "paddle/fluid/framework/operator.h"
 
+
+DECLARE_bool(print_matrix);
+
 namespace paddle {
 namespace distributed {
 
@@ -182,11 +185,74 @@ void ComputeInterceptor::ReplyCompletedToUpStream() {
   }
 }
 
+template <typename T>
+static void PrintMatrix(const T* mat_d, int num, std::string name) {
+  if (!FLAGS_print_matrix) return;
+
+    std::vector<T> tmp(num);
+    cudaMemcpy(tmp.data(), mat_d, sizeof(T) * num, cudaMemcpyDeviceToHost);
+
+    std::ofstream outfile;
+    outfile.open(name+".txt", std::ios::out);
+    std::stringstream ss;
+
+    for (int i = 0; i < num; ++i) {
+      if(std::is_same<T, int8_t>::value) {
+        ss << static_cast<int>(tmp[i]) << std::endl;
+      } else {
+        ss << std::setprecision(8) << tmp[i] << std::endl;
+      }
+    }
+    outfile << ss.str();
+    outfile.close();
+}
+
+template <paddle::experimental::DataType D>
+struct TestTypeTraits {
+  using TestDataType = float;
+};
+
+template<>
+struct TestTypeTraits<paddle::experimental::DataType::FLOAT32> {
+  using TestDataType = float;
+};
+
+template<>
+struct TestTypeTraits<paddle::experimental::DataType::FLOAT16> {
+  using TestDataType = phi::dtype::float16;
+};
+
 void ComputeInterceptor::RunOps() {
   VLOG(3) << "ComputeInterceptor " << interceptor_id_ << " running ops for the "
           << step_ + 1 << " time.";
+  static std::unordered_set<std::string> white_lists{"c_identity_0.tmp_0.quantized"};
+  std::ifstream infile;
+  infile.open("/home/work/workspace/ernie3_quant/var_name.txt");
+  while (!infile.eof()) {
+    std::string line;
+    infile >> line;
+    white_lists.insert(line);
+  }
   for (auto op : node_->ops()) {
     op->Run(*microbatch_scopes_[step_ % node_->max_run_times()], place_);
+    if (FLAGS_print_matrix) {
+      auto* scope = microbatch_scopes_[step_ % node_->max_run_times()];
+      for (auto &output : op->Outputs()) {
+        for (auto &var_name : output.second) {
+          if (white_lists.count(var_name) == 0) continue;
+          auto *var = scope->FindVar(var_name);
+          if (!var || !var->IsType<phi::DenseTensor>()) continue;
+          auto dense_tensor = var->Get<phi::DenseTensor>();
+          if (!dense_tensor.initialized()) continue;
+          if (dense_tensor.dtype() == paddle::experimental::DataType::FLOAT32) {
+            PrintMatrix(dense_tensor.data<float>(), dense_tensor.numel(), var_name + std::to_string(place_.GetDeviceId()));
+          } else if (dense_tensor.dtype() == paddle::experimental::DataType::FLOAT16) {
+            PrintMatrix(dense_tensor.data<phi::dtype::float16>(), dense_tensor.numel(), var_name + std::to_string(place_.GetDeviceId()));
+          }
+          
+        }
+      }
+    }
     if (gc_) {
       framework::DeleteUnusedTensors(
           *microbatch_scopes_[step_ % node_->max_run_times()],
