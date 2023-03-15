@@ -689,7 +689,7 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void fused_fast_ln_fwd_kernel(
                                           quant_round_type,
                                           quant_max_bound,
                                           quant_min_bound);
-          x_output[it][jt] = static_cast<int8_t>(x[it][jt]);
+          // x_output[it][jt] = static_cast<int8_t>(x[it][jt]);
         }
       }
     }
@@ -866,7 +866,7 @@ void LaunchLayernormResidualDropoutBias(
       scale != nullptr && layernorm_bias != nullptr) {
     can_call_fast_ln_kernel = true;
   }
-  VLOG(6) << "can_call_fast_ln_kernel = " << can_call_fast_ln_kernel;
+  VLOG(2) << "can_call_fast_ln_kernel = " << can_call_fast_ln_kernel;
 
   const int VecSize = MAX_CACHE_BYTES / sizeof(T);
   if (cols % VecSize != 0) {
