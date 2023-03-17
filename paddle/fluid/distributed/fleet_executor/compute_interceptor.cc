@@ -226,12 +226,14 @@ void ComputeInterceptor::RunOps() {
   VLOG(3) << "ComputeInterceptor " << interceptor_id_ << " running ops for the "
           << step_ + 1 << " time.";
   static std::unordered_set<std::string> white_lists{"c_identity_0.tmp_0.quantized"};
-  std::ifstream infile;
-  infile.open("/home/work/workspace/ernie3_quant/var_name.txt");
-  while (!infile.eof()) {
-    std::string line;
-    infile >> line;
-    white_lists.insert(line);
+  if (FLAGS_print_matrix) {
+    std::ifstream infile;
+    infile.open("/home/work/workspace/ernie3_quant/var_name.txt");
+    while (!infile.eof()) {
+      std::string line;
+      infile >> line;
+      white_lists.insert(line);
+    }
   }
   for (auto op : node_->ops()) {
     op->Run(*microbatch_scopes_[step_ % node_->max_run_times()], place_);

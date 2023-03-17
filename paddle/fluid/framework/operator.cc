@@ -189,6 +189,10 @@ static LoD GetLoDDebug(const ScopeBase& scope, const std::string& name) {
 RuntimeContext::RuntimeContext(const VariableNameMap& innames,
                                const VariableNameMap& outnames,
                                const Scope& scope) {
+  platform::RecordEvent record_event("runtime_ctx",
+                                       platform::TracerEventType::OperatorInner,
+                                       1,
+                                       platform::EventRole::kInnerOp);       
   for (auto& var_name_item : innames) {
     std::vector<Variable*>& input_vars = inputs[var_name_item.first];
     input_vars.reserve(var_name_item.second.size());
@@ -1419,6 +1423,8 @@ void OperatorWithKernel::RunImpl(const Scope& scope,
   // To reduce the elapsed time of HasAttr, we use bool variable to record the
   // result of HasAttr.
   if (!enable_cache_runtime_context_ && HasAttr(kEnableCacheRuntimeContext))
+    enable_cache_runtime_context_ = true;
+  if (this->Type() == "fused_multi_transformer_int8")
     enable_cache_runtime_context_ = true;
   if (!all_kernels_must_compute_runtime_shape_ &&
       HasAttr(kAllKernelsMustComputeRuntimeShape))

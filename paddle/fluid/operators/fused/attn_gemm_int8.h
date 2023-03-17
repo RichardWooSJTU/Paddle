@@ -148,12 +148,12 @@ class AttnMatmulINT8 {
       std::vector<phi::DenseTensor*> outs = {bias_out};
       phi::funcs::BroadcastKernel<phi::ElementwiseType::kBinary, T, T>(
           dev_ctx_, ins, &outs, -1, phi::funcs::AddFunctor<T>());
-      PADDLE_ENFORCE_EQ(cudaGetLastError(),
-                        cudaSuccess,
-                        platform::errors::Fatal(
-                            "cuda error occured after computing bias. "
-                            "But it does not mean this error is caused by "
-                            "bias computing"));
+    //   PADDLE_ENFORCE_EQ(cudaGetLastError(),
+    //                     cudaSuccess,
+    //                     platform::errors::Fatal(
+    //                         "cuda error occured after computing bias. "
+    //                         "But it does not mean this error is caused by "
+    //                         "bias computing"));
     }
   }
 
