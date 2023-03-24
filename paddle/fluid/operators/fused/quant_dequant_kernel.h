@@ -28,6 +28,67 @@ using phi::backends::gpu::GpuLaunchConfig;
 
 constexpr int DequantKernelVecSize = 4;
 
+
+template<typename T>
+struct QuantFunc{
+  HOSTDEVICE int8_t operator()(const T x, const float scale, const float max_bound,
+                               const float min_bound) {
+    float tmp = static_cast<float>(x) * max_bound *  scale;
+    tmp = round(tmp);
+    if (tmp > max_bound)
+      tmp = max_bound;
+    else if (tmp < min_bound)
+      tmp = min_bound;
+    return static_cast<int8_t>(tmp);
+  }
+};
+
+template<typename T, int VecSize>
+__global__ void QuantActKernel(const T* x, const int32_t rows, const int32_t cols, float scale, int8_t* quant_x,  
+                               const float max_bound,
+                               const float min_bound) {
+  
+  using InVec = phi::AlignedVector<T, VecSize>;
+  using OutVec = phi::AlignedVector<int8_t, VecSize>;
+
+  const int stride = blockDim.x * gridDim.x * VecSize;
+  const int num_items = rows * cols;
+
+  InVec in_vec;
+  OutVec out_vec;
+  for(int32_t linear_index = (blockIdx.x * blockDim.x + threadIdx.x) * VecSize; linear_index < num_items; linear_index += stride){
+        phi::Load<T, VecSize>(x + linear_index, &in_vec);
+        #pragma unroll
+        for (int i = 0; i < VecSize; ++i) {
+          out_vec[i] = QuantFunc<T>()(in_vec[i], scale, max_bound, min_bound);
+        }
+        phi::Store(out_vec, quant_x + linear_index);
+  }
+}
+
+
+template<typename T> 
+void LaunchQuantActKernel(const T* x, const int32_t rows, const int32_t cols, int8_t* quant_x, float scale, 
+                               const float max_bound, const float min_bound, gpuStream_t stream) {
+  constexpr int NumThreads=256;
+  constexpr int VecSize= 16 / sizeof(T);
+
+  constexpr int kNumWaves = 8; 
+  int dev;
+  cudaGetDevice(&dev);
+  int sm_count;
+  cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, dev);
+  int tpm;
+  cudaDeviceGetAttribute(&tpm, cudaDevAttrMaxThreadsPerMultiProcessor, dev);
+  const int elem_cnt = rows*cols;
+  const int launch_elem_cnt = elem_cnt / VecSize; 
+  const int grid_size = std::max<int>(1, std::min<int64_t>((launch_elem_cnt + NumThreads - 1) / NumThreads,
+                                      sm_count * tpm / NumThreads * kNumWaves));
+
+  QuantActKernel<T, VecSize><<<grid_size, NumThreads, 0, stream>>>(x, rows, cols, scale, quant_x, max_bound, min_bound);                                                            
+}
+
+
 template <typename T>
 __forceinline__ __device__ int8_t quant_helper(const T input,
                                                const float scale,

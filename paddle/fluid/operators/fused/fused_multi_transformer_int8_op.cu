@@ -14,11 +14,33 @@ limitations under the License. */
 
 #include "paddle/fluid/operators/fused/attn_gemm_int8.h"
 #include "paddle/fluid/operators/fused/fused_multi_transformer_op.cu.h"
+#include "paddle/fluid/operators/fused/layernorm_quant_dequant.h"
 
 DECLARE_int32(debug_layer_id);
 
 namespace paddle {
 namespace operators {
+
+template <typename T>
+static void PrintMatrix(const T* mat_d, int num, std::string name) {
+
+    std::vector<T> tmp(num);
+    cudaMemcpy(tmp.data(), mat_d, sizeof(T) * num, cudaMemcpyDeviceToHost);
+
+    std::ofstream outfile;
+    outfile.open(name+".txt", std::ios::out);
+    std::stringstream ss;
+
+    for (int i = 0; i < num; ++i) {
+      if(std::is_same<T, int8_t>::value) {
+        ss << static_cast<int>(tmp[i]) << std::endl;
+      } else {
+        ss << std::setprecision(8) << tmp[i] << std::endl;
+      }
+    }
+    outfile << ss.str();
+    outfile.close();
+}
 
 template <typename T>
 class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
@@ -167,9 +189,14 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
     FusedDropoutLayerNormHelper<T, uint8_t, int32_t, int8_t>
         fused_dropout_layernorm_helper(
             dev_ctx, bsz_seq, dim_embed, dropout_param2, epsilon);
+    FusedDropoutLayerNormHelper<T, uint8_t, int32_t, T>
+        fused_dropout_layernorm_helper_just_dequant(
+            dev_ctx, bsz_seq, dim_embed, dropout_param2, epsilon);
     FusedDropoutLayerNormHelper<T, uint8_t>
         fused_dropout_layernorm_helper_for_post_layernorm(
             dev_ctx, bsz_seq, dim_embed, dropout_param2, epsilon);
+
+    using LayerNormComputeType = float; 
     auto ffn_ln_scales = ctx.MultiInput<phi::DenseTensor>("FFNLnScale");
     auto ffn_ln_biases = ctx.MultiInput<phi::DenseTensor>("FFNLnBias");
     phi::DenseTensor bias_dropout_residual_out, dropout_mask_out;
@@ -477,26 +504,62 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
         auto *ln_bias_data = ffn_ln_biases[i]->data<U>();
         auto *out_linear_bias_data = out_linear_biases[i]->data<T>();
 
+        
+
         // inplace
         // non-inplace: buf1 -> input_workspace
-        fused_dropout_layernorm_helper.LayernormResidualDropoutBias(
-            dev_ctx,
-            output_workspace.data<int32_t>(),
-            x_data,
-            out_linear_bias_data,
-            ln_scale_data,
-            ln_bias_data,
-            bias_dropout_residual_out_data,
-            dropout_mask_out_data,
-            input_workspace.data<int8_t>(),
-            ln_mean_data,
-            ln_var_data,
-            out_linear_in_scale[i],
-            out_linear_out_scales[i]->data<float>(),
-            ffn1_in_scale[i],
-            quant_round_type,
-            quant_max_bound,
-            quant_min_bound);
+        // fused_dropout_layernorm_helper.LayernormResidualDropoutBias(
+        //     dev_ctx,
+        //     output_workspace.data<int32_t>(),
+        //     x_data,
+        //     out_linear_bias_data,
+        //     ln_scale_data,
+        //     ln_bias_data,
+        //     bias_dropout_residual_out_data,
+        //     dropout_mask_out_data,
+        //     input_workspace.data<int8_t>(),
+        //     ln_mean_data,
+        //     ln_var_data,
+        //     out_linear_in_scale[i],
+        //     out_linear_out_scales[i]->data<float>(),
+        //     ffn1_in_scale[i],
+        //     quant_round_type,
+        //     quant_max_bound,
+        //     quant_min_bound);
+        
+        // phi::DenseTensor ffn_ln_out;
+        // ffn_ln_out.Resize(input_x->dims());
+        // dev_ctx.Alloc<T>(&ffn_ln_out);
+
+        // fused_dropout_layernorm_helper_just_dequant.LayernormResidualDropoutBias(
+        //     dev_ctx,
+        //     output_workspace.data<int32_t>(),
+        //     x_data,
+        //     out_linear_bias_data,
+        //     ln_scale_data,
+        //     ln_bias_data,
+        //     bias_dropout_residual_out_data,
+        //     dropout_mask_out_data,
+        //     ffn_ln_out.data<T>(),
+        //     ln_mean_data,
+        //     ln_var_data,
+        //     out_linear_in_scale[i],
+        //     out_linear_out_scales[i]->data<float>(),
+        //     ffn1_in_scale[i],
+        //     quant_round_type,
+        //     quant_max_bound,
+        //     quant_min_bound);
+        //   LaunchQuantActKernel<T>(ffn_ln_out.data<T>(), bsz_seq, dim_embed, input_workspace.data<int8_t>(), ffn1_in_scale[i], quant_max_bound, quant_min_bound, dev_ctx.stream());
+
+        // VLOG(1) << "RIGHT out " << input_workspace;
+        // DequantSkipLoad<int32_t, T, T> load(output_workspace.data<int32_t>(), out_linear_bias_data, x_data, out_linear_out_scales[i]->data<float>(), 0.0f, dim_embed);
+        DequantSkipLoadAndStoreResidual<int32_t, T, T> load(output_workspace.data<int32_t>(), out_linear_bias_data, x_data, 
+                                                            out_linear_out_scales[i]->data<float>(), bias_dropout_residual_out_data, 0.0f, dim_embed);
+        AffineQuantStore<int8_t, LayerNormComputeType, T, true, true> store(input_workspace.data<int8_t>(), dim_embed, 
+                                                                          ln_scale_data, ln_bias_data, ffn1_in_scale[i], quant_round_type, quant_max_bound, quant_min_bound);
+        DispatchLayerNorm<decltype(load), decltype(store), LayerNormComputeType>(dev_ctx.stream(), load, store, bsz_seq, dim_embed, epsilon, ln_mean_data, ln_var_data);
+        VLOG(1) << "WRONG out " << input_workspace;
+
       } else {
         auto *ln_scale_data = ln_scales[i]->data<U>();
         auto *ln_bias_data = ln_biases[i]->data<U>();
@@ -630,24 +693,57 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
           auto *ln_scale_data = ln_scales[i + 1]->data<U>();
           auto *ln_bias_data = ln_biases[i + 1]->data<U>();
 
-          ffn2_fused_dropout_helper.LayernormResidualDropoutBias(
-              dev_ctx,
-              output_workspace.data<int32_t>(),
-              bias_dropout_residual_out_data,
-              ffn2_biases[i]->data<T>(),
-              ln_scale_data,
-              ln_bias_data,
-              buf1->data<T>(),
-              dropout_mask_out_data,
-              input_workspace.data<int8_t>(),
-              ln_mean_data,
-              ln_var_data,
-              ffn2_in_scale[i],
-              ffn2_out_scales[i]->data<float>(),
-              qkv_in_scale[i + 1],
-              quant_round_type,
-              quant_max_bound,
-              quant_min_bound);
+          // ffn2_fused_dropout_helper.LayernormResidualDropoutBias(
+          //     dev_ctx,
+          //     output_workspace.data<int32_t>(),
+          //     bias_dropout_residual_out_data,
+          //     ffn2_biases[i]->data<T>(),
+          //     ln_scale_data,
+          //     ln_bias_data,
+          //     buf1->data<T>(),
+          //     dropout_mask_out_data,
+          //     input_workspace.data<int8_t>(),
+          //     ln_mean_data,
+          //     ln_var_data,
+          //     ffn2_in_scale[i],
+          //     ffn2_out_scales[i]->data<float>(),
+          //     qkv_in_scale[i + 1],
+          //     quant_round_type,
+          //     quant_max_bound,
+          //     quant_min_bound);
+
+        phi::DenseTensor ln_out;
+        ln_out.Resize(input_x->dims());
+        dev_ctx.Alloc<T>(&ln_out);
+
+        // fused_dropout_layernorm_helper_just_dequant.LayernormResidualDropoutBias(
+        //     dev_ctx,
+        //     output_workspace.data<int32_t>(),
+        //     bias_dropout_residual_out_data,
+        //     ffn2_biases[i]->data<T>(),
+        //     ln_scale_data,
+        //     ln_bias_data,
+        //     buf1->data<T>(),
+        //     dropout_mask_out_data,
+        //     ln_out.data<T>(),
+        //     ln_mean_data,
+        //     ln_var_data,
+        //     ffn2_in_scale[i],
+        //     ffn2_out_scales[i]->data<float>(),
+        //     qkv_in_scale[i + 1],
+        //     quant_round_type,
+        //     quant_max_bound,
+        //     quant_min_bound);
+        //   LaunchQuantActKernel<T>(ln_out.data<T>(), bsz_seq, dim_embed, input_workspace.data<int8_t>(), qkv_in_scale[i + 1], quant_max_bound, quant_min_bound, dev_ctx.stream());
+        // VLOG(1) << "RIGHT out " << input_workspace;
+    
+        // DequantSkipLoad<int32_t, T, T> load(output_workspace.data<int32_t>(), ffn2_biases[i]->data<T>(), bias_dropout_residual_out_data, ffn2_out_scales[i]->data<float>(), 0.0f, dim_embed);
+        DequantSkipLoadAndStoreResidual<int32_t, T, T> load(output_workspace.data<int32_t>(), ffn2_biases[i]->data<T>(), bias_dropout_residual_out_data, 
+                                                            ffn2_out_scales[i]->data<float>(), buf1->data<T>(), 0.0f, dim_embed);
+        AffineQuantStore<int8_t, LayerNormComputeType, T, true, true> store(input_workspace.data<int8_t>(), dim_embed, 
+                                                                          ln_scale_data, ln_bias_data, qkv_in_scale[i + 1], quant_round_type, quant_max_bound, quant_min_bound);
+        DispatchLayerNorm<decltype(load), decltype(store), LayerNormComputeType>(dev_ctx.stream(), load, store, bsz_seq, dim_embed, epsilon, ln_mean_data, ln_var_data);
+        VLOG(1) << "WRONG out " << input_workspace;
         } else {
           ffn2_fused_dropout_dequant_helper.ResidualDropoutBias(
               dev_ctx,
@@ -682,6 +778,7 @@ class FusedMultiTransformerINT8OpKernel : public framework::OpKernel<T> {
       if (pre_layer_norm) {
         x_data = buf1->data<T>();
       }
+      VLOG(2) << "out layer " << i << " " << *buf1;
     }
   }
 };
