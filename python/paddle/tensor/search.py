@@ -1149,7 +1149,7 @@ def top_p_sampling(x, ps, threshold=None, seed=None, name=None):
     if seed is None:
         seed = -1
 
-    if in_dygraph_mode():
+    if in_dynamic_mode():
         return _C_ops.top_p_sampling(x, ps, threshold, seed)
 
     inputs = {"x": x, "ps": ps, "threshold": threshold}
