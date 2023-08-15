@@ -3609,6 +3609,7 @@ def reshape(x, shape, name=None):
                 'int64',
                 'bool',
                 'uint16',
+                'int8',
             ],
             'reshape',
         )

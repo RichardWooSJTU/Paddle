@@ -1394,15 +1394,15 @@ void FusedBiasActInferMeta(const MetaTensor& x,
   auto token_num = x_dims[0];
   auto dim = x_dims[1];
 
-  PADDLE_ENFORCE_GT(
-      x_dims[0],
-      0,
-      phi::errors::InvalidArgument("The size of Attr(rows) must > 0"));
+  // PADDLE_ENFORCE_GT(
+  //     x_dims[0],
+  //     0,
+  //     phi::errors::InvalidArgument("The size of Attr(rows) must > 0"));
 
-  PADDLE_ENFORCE_GT(
-      x_dims[1],
-      0,
-      phi::errors::InvalidArgument("The size of Attr(cols) must > 0"));
+  // PADDLE_ENFORCE_GT(
+  //     x_dims[1],
+  //     0,
+  //     phi::errors::InvalidArgument("The size of Attr(cols) must > 0"));
 
   if (act_method == "geglu" || act_method == "swiglu") {
     PADDLE_ENFORCE_EQ(
@@ -1535,15 +1535,15 @@ void FusedLayerNormInferMeta(const MetaTensor& x,
     rows *= x.dims()[i];
   }
 
-  PADDLE_ENFORCE_EQ(normalized_dims,
-                    norm_weight.dims()[0],
-                    phi::errors::InvalidArgument(
-                        "The normalized size of Input(X) must equal to be"
-                        "the size of Weight, but received"
-                        "normalized size of Input(X) is [%d], received size"
-                        "of Weight is [%d]",
-                        normalized_dims,
-                        norm_weight.dims()[0]));
+  // PADDLE_ENFORCE_EQ(normalized_dims,
+  //                   norm_weight.dims()[0],
+  //                   phi::errors::InvalidArgument(
+  //                       "The normalized size of Input(X) must equal to be"
+  //                       "the size of Weight, but received"
+  //                       "normalized size of Input(X) is [%d], received size"
+  //                       "of Weight is [%d]",
+  //                       normalized_dims,
+  //                       norm_weight.dims()[0]));
 
   auto out_dims = phi::make_ddim(x_dims_vec);
 

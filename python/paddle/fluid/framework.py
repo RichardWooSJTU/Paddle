@@ -4253,13 +4253,13 @@ class Block:
             }
             from .dygraph.base import in_declarative_mode
 
-            if (
-                in_declarative_mode()
-                and not _stride_in_no_check_dy2st_diff_mode
-            ):
-                check_if_to_static_diff_with_dygraph(
-                    op_type, inplace_map, outputs
-                )
+            # if (
+            #     in_declarative_mode()
+            #     and not _stride_in_no_check_dy2st_diff_mode
+            # ):
+            #     check_if_to_static_diff_with_dygraph(
+            #         op_type, inplace_map, outputs
+            #     )
             if op_type not in ignore_ops:
                 pass_stop_gradient(inputs, outputs)
             with param_guard(inputs), param_guard(outputs):

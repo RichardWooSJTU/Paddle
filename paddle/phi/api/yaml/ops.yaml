@@ -2825,3 +2825,11 @@
   optional : gt_score
   intermediate : objectness_mask, gt_match_mask
   backward : yolo_loss_grad
+
+- op : matmul_int8
+  args : (Tensor x, Tensor y, bool transpose_x = false, bool transpose_y = false)
+  output : Tensor
+  infer_meta :
+    func : MatmulInt8InferMeta
+  kernel :
+    func : matmul_int8
